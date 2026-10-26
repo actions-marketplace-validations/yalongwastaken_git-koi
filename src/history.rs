@@ -52,7 +52,7 @@ pub struct ContributionSummary {
 /// Participation in one Monday-Sunday week, including explicitly inactive weeks.
 /// `observed_day_count` distinguishes partial calendar coverage from a full week.
 /// A week matching the summary's observation week is still in progress.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContributionWeek {
     pub iso_week: IsoWeek,
     pub active_day_count: u8,
