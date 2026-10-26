@@ -1,10 +1,14 @@
 use std::collections::BTreeMap;
 
+use chrono::{Datelike, Days, NaiveDate};
 use git_koi::history::{
-    AccountSnapshot, ConflictingRepository, RepositoryVisibility, calculate_language_shares,
+    AccountSnapshot, ConflictingRepository, ContributionDay, ContributionHistory,
+    ContributionHistoryError, RepositoryVisibility, calculate_language_shares,
+    summarize_contributions,
 };
 
 const ACCOUNT_JSON: &str = include_str!("fixtures/account.json");
+const ACCOUNT_WITH_HISTORY_JSON: &str = include_str!("fixtures/account-with-history.json");
 
 #[test]
 fn language_shares_count_only_eligible_projects() {
@@ -139,6 +143,205 @@ fn incompatible_documents_cannot_enter_language_calculation() {
         snapshot_without_version,
         snapshot_with_unknown_account_field,
         snapshot_with_unknown_repository_field,
+    ] {
+        assert!(serde_json::from_value::<AccountSnapshot>(incompatible_document).is_err());
+    }
+}
+
+#[test]
+fn weekly_summary_preserves_inactive_and_partial_weeks_across_a_year_boundary() {
+    let account_snapshot: AccountSnapshot =
+        serde_json::from_str(ACCOUNT_WITH_HISTORY_JSON).unwrap();
+    let contribution_summary = summarize_contributions(&account_snapshot).unwrap();
+    let weekly_participation: Vec<_> = contribution_summary
+        .weeks
+        .iter()
+        .map(|contribution_week| {
+            (
+                contribution_week.iso_week.year(),
+                contribution_week.iso_week.week(),
+                contribution_week.active_day_count,
+                contribution_week.observed_day_count,
+            )
+        })
+        .collect();
+
+    assert_eq!(contribution_summary.total_contributions, 14);
+    assert_eq!(
+        weekly_participation,
+        [
+            (2025, 51, 1, 2),
+            (2025, 52, 3, 7),
+            (2026, 1, 0, 7),
+            (2026, 2, 2, 2)
+        ]
+    );
+    assert_eq!(
+        contribution_summary.weeks.last().unwrap().iso_week,
+        contribution_summary.observed_on.iso_week()
+    );
+}
+
+#[test]
+fn equal_totals_preserve_different_weekday_and_weekend_participation() {
+    let first_monday: NaiveDate = "2026-01-05".parse().unwrap();
+    let weekday_counts = [1, 1, 1, 1, 1, 0, 0];
+    let saturday_counts = [0, 0, 0, 0, 0, 5, 0];
+    for (weekly_counts, expected_active_days) in [(weekday_counts, 5), (saturday_counts, 1)] {
+        let contribution_days: Vec<_> = (0..12 * 7)
+            .zip(weekly_counts.into_iter().cycle())
+            .map(|(day_offset, contribution_count)| ContributionDay {
+                date: first_monday
+                    .checked_add_days(Days::new(day_offset))
+                    .unwrap(),
+                contribution_count,
+            })
+            .collect();
+        let mut account_snapshot: AccountSnapshot = serde_json::from_str(ACCOUNT_JSON).unwrap();
+        account_snapshot.contribution_history = Some(ContributionHistory {
+            observed_on: contribution_days.last().unwrap().date,
+            days: contribution_days,
+        });
+        let contribution_summary = summarize_contributions(&account_snapshot).unwrap();
+        assert_eq!(contribution_summary.total_contributions, 60);
+        assert_eq!(
+            contribution_summary
+                .weeks
+                .iter()
+                .map(|contribution_week| contribution_week.active_day_count)
+                .collect::<Vec<_>>(),
+            vec![expected_active_days; 12]
+        );
+    }
+}
+
+#[test]
+fn weekly_measurements_ignore_observation_order_and_identical_duplicates() {
+    let mut account_snapshot: AccountSnapshot =
+        serde_json::from_str(ACCOUNT_WITH_HISTORY_JSON).unwrap();
+    let original_summary = summarize_contributions(&account_snapshot).unwrap();
+    let contribution_days = &mut account_snapshot.contribution_history.as_mut().unwrap().days;
+    contribution_days.push(contribution_days[0].clone());
+    contribution_days.reverse();
+    assert_eq!(
+        summarize_contributions(&account_snapshot).unwrap(),
+        original_summary
+    );
+}
+
+#[test]
+fn supported_snapshot_versions_preserve_observations_and_language_shares() {
+    let mut legacy_snapshot: AccountSnapshot = serde_json::from_str(ACCOUNT_JSON).unwrap();
+    assert_eq!(
+        serde_json::to_value(&legacy_snapshot).unwrap(),
+        serde_json::from_str::<serde_json::Value>(ACCOUNT_JSON).unwrap()
+    );
+    let original_shares = calculate_language_shares(&legacy_snapshot).unwrap();
+    let dated_snapshot: AccountSnapshot = serde_json::from_str(ACCOUNT_WITH_HISTORY_JSON).unwrap();
+    legacy_snapshot.contribution_history = dated_snapshot.contribution_history;
+    let snapshot_bytes = serde_json::to_vec(&legacy_snapshot).unwrap();
+    let restored_snapshot: AccountSnapshot = serde_json::from_slice(&snapshot_bytes).unwrap();
+    assert_eq!(restored_snapshot, legacy_snapshot);
+    assert_eq!(
+        calculate_language_shares(&restored_snapshot).unwrap(),
+        original_shares
+    );
+    assert_eq!(
+        summarize_contributions(&restored_snapshot).unwrap(),
+        summarize_contributions(&legacy_snapshot).unwrap()
+    );
+}
+
+#[test]
+fn unavailable_history_differs_from_confirmed_empty_history() {
+    let mut account_snapshot: AccountSnapshot = serde_json::from_str(ACCOUNT_JSON).unwrap();
+    assert_eq!(
+        summarize_contributions(&account_snapshot),
+        Err(ContributionHistoryError::MissingHistory)
+    );
+    account_snapshot.contribution_history = Some(ContributionHistory {
+        observed_on: "2026-01-06".parse().unwrap(),
+        days: Vec::new(),
+    });
+    let empty_summary = summarize_contributions(&account_snapshot).unwrap();
+    assert_eq!(empty_summary.total_contributions, 0);
+    assert!(empty_summary.weeks.is_empty());
+}
+
+#[test]
+fn missing_dates_cannot_silently_shorten_weekly_participation() {
+    let account_snapshot: AccountSnapshot =
+        serde_json::from_str(ACCOUNT_WITH_HISTORY_JSON).unwrap();
+    let last_day_index = account_snapshot
+        .contribution_history
+        .as_ref()
+        .unwrap()
+        .days
+        .len()
+        - 1;
+    for removed_index in [1, last_day_index] {
+        let mut corrupted_snapshot = account_snapshot.clone();
+        let contribution_history = corrupted_snapshot.contribution_history.as_mut().unwrap();
+        let removed_day = contribution_history.days.remove(removed_index);
+        assert_eq!(
+            summarize_contributions(&corrupted_snapshot),
+            Err(ContributionHistoryError::MissingDate(removed_day.date))
+        );
+    }
+}
+
+#[test]
+fn conflicting_counts_cannot_replace_an_observation() {
+    let mut account_snapshot: AccountSnapshot =
+        serde_json::from_str(ACCOUNT_WITH_HISTORY_JSON).unwrap();
+    let contribution_days = &mut account_snapshot.contribution_history.as_mut().unwrap().days;
+    let mut conflicting_day = contribution_days[0].clone();
+    conflicting_day.contribution_count += 1;
+    let expected_error = ContributionHistoryError::ConflictingDate(conflicting_day.date);
+    contribution_days.push(conflicting_day);
+    assert_eq!(
+        summarize_contributions(&account_snapshot),
+        Err(expected_error)
+    );
+}
+
+#[test]
+fn observations_after_the_cutoff_cannot_inflate_the_total() {
+    let mut account_snapshot: AccountSnapshot =
+        serde_json::from_str(ACCOUNT_WITH_HISTORY_JSON).unwrap();
+    let contribution_history = account_snapshot.contribution_history.as_mut().unwrap();
+    contribution_history.observed_on = contribution_history.observed_on.pred_opt().unwrap();
+    let expected_error = ContributionHistoryError::AfterObservationDate {
+        contribution_date: contribution_history.days.last().unwrap().date,
+        observed_on: contribution_history.observed_on,
+    };
+    assert_eq!(
+        summarize_contributions(&account_snapshot),
+        Err(expected_error)
+    );
+}
+
+#[test]
+fn snapshot_versions_enforce_their_own_history_fields() {
+    let snapshot_document: serde_json::Value =
+        serde_json::from_str(ACCOUNT_WITH_HISTORY_JSON).unwrap();
+    let mut legacy_with_history = snapshot_document.clone();
+    legacy_with_history["schema_version"] = serde_json::json!(1);
+    let mut dated_without_history = snapshot_document.clone();
+    dated_without_history
+        .as_object_mut()
+        .unwrap()
+        .remove("contribution_history");
+    let mut dated_with_null_history = snapshot_document.clone();
+    dated_with_null_history["contribution_history"] = serde_json::Value::Null;
+    let mut history_with_unknown_field = snapshot_document;
+    history_with_unknown_field["contribution_history"]["unexpected_field"] =
+        serde_json::json!(true);
+    for incompatible_document in [
+        legacy_with_history,
+        dated_without_history,
+        dated_with_null_history,
+        history_with_unknown_field,
     ] {
         assert!(serde_json::from_value::<AccountSnapshot>(incompatible_document).is_err());
     }

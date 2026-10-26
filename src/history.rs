@@ -1,29 +1,62 @@
-//! Account observations and project-count language shares, independent of collection.
+//! Account observations, language shares, and weekly participation, independent of collection.
 
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 
-use serde::{Deserialize, Serialize};
+use chrono::{Datelike, IsoWeek, NaiveDate};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// GitHub observations supplied by the caller, readable and writable through Serde.
 ///
 /// The caller supplies the complete collection of owned and GitHub-recognized
 /// contributed repositories. Parsing verifies the format, not collection completeness.
-/// All fields are required; unknown fields and unsupported versions are rejected.
+/// Older snapshots remain usable for language shares but have no contribution history.
+/// Serialization selects the format from the available observations. Unknown fields,
+/// unsupported versions, and missing fields within a supported format are rejected.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "SnapshotDocument", into = "SnapshotDocument")]
 pub struct AccountSnapshot {
-    pub schema_version: SnapshotVersion,
     pub account_id: u64,
     pub repositories: Vec<RepositoryObservation>,
+    pub contribution_history: Option<ContributionHistory>,
 }
 
-/// Supported snapshot formats, independent of the program's release version.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(try_from = "u32", into = "u32")]
-pub enum SnapshotVersion {
-    V1 = 1,
+/// Daily observations through an explicit date, without consulting the system clock.
+///
+/// A nonempty collection must include every date from its first observation through
+/// `observed_on`, including zero-activity dates. An empty collection explicitly
+/// confirms no observations. The collector owns completeness before the first date.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContributionHistory {
+    pub observed_on: NaiveDate,
+    pub days: Vec<ContributionDay>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContributionDay {
+    pub date: NaiveDate,
+    pub contribution_count: u32,
+}
+
+/// Derived measurements; these are not stored alongside source observations.
+#[derive(Debug, Eq, PartialEq)]
+pub struct ContributionSummary {
+    pub observed_on: NaiveDate,
+    pub total_contributions: u64,
+    pub weeks: Vec<ContributionWeek>,
+}
+
+/// Participation in one Monday-Sunday week, including explicitly inactive weeks.
+/// `observed_day_count` distinguishes partial calendar coverage from a full week.
+/// A week matching the summary's observation week is still in progress.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContributionWeek {
+    pub iso_week: IsoWeek,
+    pub active_day_count: u8,
+    pub observed_day_count: u8,
 }
 
 /// Current repository metadata identified by its stable GitHub numeric ID.
@@ -98,6 +131,43 @@ pub fn calculate_language_shares(
         .collect())
 }
 
+/// Summarize one account's dated contributions into chronological calendar weeks.
+///
+/// Counts are GitHub-recognized contributions without additional weighting. Each
+/// date counts once; identical duplicates and input order do not affect results.
+/// Missing history, gaps, conflicting dates, and dates after the observation date
+/// fail rather than silently changing participation. Inputs are not mutated.
+/// A confirmed empty history produces zero contributions and no observed weeks.
+pub fn summarize_contributions(
+    account_snapshot: &AccountSnapshot,
+) -> Result<ContributionSummary, ContributionHistoryError> {
+    let contribution_history = account_snapshot
+        .contribution_history
+        .as_ref()
+        .ok_or(ContributionHistoryError::MissingHistory)?;
+    let daily_counts = normalize_contribution_days(contribution_history)?;
+    let mut weekly_contributions = BTreeMap::new();
+    let mut total_contributions = 0;
+    for (contribution_date, contribution_count) in daily_counts {
+        total_contributions += u64::from(contribution_count);
+        let iso_week = contribution_date.iso_week();
+        let contribution_week = weekly_contributions
+            .entry(iso_week)
+            .or_insert(ContributionWeek {
+                iso_week,
+                active_day_count: 0,
+                observed_day_count: 0,
+            });
+        contribution_week.active_day_count += u8::from(contribution_count > 0);
+        contribution_week.observed_day_count += 1;
+    }
+    Ok(ContributionSummary {
+        observed_on: contribution_history.observed_on,
+        total_contributions,
+        weeks: weekly_contributions.into_values().collect(),
+    })
+}
+
 /// Two observations disagree about the same repository; no shares were produced.
 #[derive(Debug, Eq, PartialEq)]
 pub struct ConflictingRepository {
@@ -116,12 +186,168 @@ impl fmt::Display for ConflictingRepository {
 
 impl Error for ConflictingRepository {}
 
+#[derive(Debug, Eq, PartialEq)]
+pub enum ContributionHistoryError {
+    MissingHistory,
+    ConflictingDate(NaiveDate),
+    AfterObservationDate {
+        contribution_date: NaiveDate,
+        observed_on: NaiveDate,
+    },
+    MissingDate(NaiveDate),
+}
+
+impl fmt::Display for ContributionHistoryError {
+    fn fmt(&self, output_formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingHistory => write!(
+                output_formatter,
+                "contribution history is unavailable; supply a snapshot with dated contributions"
+            ),
+            Self::ConflictingDate(contribution_date) => write!(
+                output_formatter,
+                "conflicting contribution counts for {contribution_date}; collect a consistent history"
+            ),
+            Self::AfterObservationDate {
+                contribution_date,
+                observed_on,
+            } => write!(
+                output_formatter,
+                "contribution date {contribution_date} is after observation date {observed_on}; supply observations through the stated date"
+            ),
+            Self::MissingDate(contribution_date) => write!(
+                output_formatter,
+                "missing contribution date {contribution_date}; include observations for every date, including zero-activity days"
+            ),
+        }
+    }
+}
+
+impl Error for ContributionHistoryError {}
+
+fn normalize_contribution_days(
+    contribution_history: &ContributionHistory,
+) -> Result<BTreeMap<NaiveDate, u32>, ContributionHistoryError> {
+    let mut daily_counts = BTreeMap::new();
+    for contribution_day in &contribution_history.days {
+        if contribution_day.date > contribution_history.observed_on {
+            return Err(ContributionHistoryError::AfterObservationDate {
+                contribution_date: contribution_day.date,
+                observed_on: contribution_history.observed_on,
+            });
+        }
+        if let Some(previous_count) =
+            daily_counts.insert(contribution_day.date, contribution_day.contribution_count)
+            && previous_count != contribution_day.contribution_count
+        {
+            return Err(ContributionHistoryError::ConflictingDate(
+                contribution_day.date,
+            ));
+        }
+    }
+
+    let mut next_expected_date = None;
+    for contribution_date in daily_counts.keys() {
+        if let Some(expected_date) = next_expected_date
+            && *contribution_date != expected_date
+        {
+            return Err(ContributionHistoryError::MissingDate(expected_date));
+        }
+        next_expected_date = contribution_date.succ_opt();
+    }
+    if let Some(expected_date) = next_expected_date
+        && expected_date <= contribution_history.observed_on
+    {
+        return Err(ContributionHistoryError::MissingDate(expected_date));
+    }
+    Ok(daily_counts)
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SnapshotDocument {
+    schema_version: SnapshotVersion,
+    account_id: u64,
+    repositories: Vec<RepositoryObservation>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_history",
+        skip_serializing_if = "Option::is_none"
+    )]
+    contribution_history: Option<ContributionHistory>,
+}
+
+impl TryFrom<SnapshotDocument> for AccountSnapshot {
+    type Error = String;
+
+    fn try_from(snapshot_document: SnapshotDocument) -> Result<Self, Self::Error> {
+        match (
+            snapshot_document.schema_version,
+            &snapshot_document.contribution_history,
+        ) {
+            (SnapshotVersion::V1, Some(_)) => {
+                return Err(
+                    "contribution_history is not a field in snapshot version 1; \
+                     use version 2 for dated contributions"
+                        .to_owned(),
+                );
+            }
+            (SnapshotVersion::V2, None) => {
+                return Err("missing contribution_history in snapshot version 2; \
+                     supply dated observations"
+                    .to_owned());
+            }
+            _ => {}
+        }
+        Ok(Self {
+            account_id: snapshot_document.account_id,
+            repositories: snapshot_document.repositories,
+            contribution_history: snapshot_document.contribution_history,
+        })
+    }
+}
+
+impl From<AccountSnapshot> for SnapshotDocument {
+    fn from(account_snapshot: AccountSnapshot) -> Self {
+        let schema_version = if account_snapshot.contribution_history.is_some() {
+            SnapshotVersion::V2
+        } else {
+            SnapshotVersion::V1
+        };
+        Self {
+            schema_version,
+            account_id: account_snapshot.account_id,
+            repositories: account_snapshot.repositories,
+            contribution_history: account_snapshot.contribution_history,
+        }
+    }
+}
+
+// An explicit history field must be an object; absence is reserved for older snapshots.
+fn deserialize_present_history<'de, HistoryDeserializer>(
+    history_deserializer: HistoryDeserializer,
+) -> Result<Option<ContributionHistory>, HistoryDeserializer::Error>
+where
+    HistoryDeserializer: Deserializer<'de>,
+{
+    ContributionHistory::deserialize(history_deserializer).map(Some)
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(try_from = "u32", into = "u32")]
+enum SnapshotVersion {
+    V1 = 1,
+    V2 = 2,
+}
+
 impl TryFrom<u32> for SnapshotVersion {
     type Error = String;
 
     fn try_from(schema_version: u32) -> Result<Self, Self::Error> {
         if schema_version == Self::V1 as u32 {
             Ok(Self::V1)
+        } else if schema_version == Self::V2 as u32 {
+            Ok(Self::V2)
         } else {
             Err(format!(
                 "unsupported snapshot schema version {schema_version}; use a reader supporting that version"
