@@ -60,6 +60,23 @@ unsupported snapshot versions. See
 [the snapshot types and calculation contract](src/history.rs) for the format and
 [the synthetic account fixture](tests/fixtures/account.json) for an example.
 
+Snapshots with contribution history also carry an observation date and daily
+GitHub contribution counts. `history::summarize_contributions` returns the total
+and chronological Monday-Sunday weeks, with active-day counts and observed-day
+counts kept distinct. Explicitly inactive weeks remain in the result; partial
+weeks retain their observed coverage. The observation date identifies the week
+still in progress. Calculations use no system clock.
+
+Dates may arrive in any order, and identical duplicates count once. A nonempty
+history must contain every date from its first observation through its
+observation date, including days with zero contributions. Gaps, conflicting
+counts, and later dates fail instead of changing the apparent activity.
+
+The writer selects the snapshot version from the available observations. Older
+snapshots remain readable for language shares; contribution summaries report
+missing history rather than treating it as zero. See
+[the dated account fixture](tests/fixtures/account-with-history.json).
+
 Exercise the library through its public interface:
 
 ```sh
@@ -73,7 +90,7 @@ cargo fmt --all -- --check
 cargo clippy --offline --locked --all-targets -- -D warnings
 cargo test --offline --locked
 cargo build --release --offline --locked
-npx prettier@3.9.10 --check README.md .prettierrc.json tests/fixtures/account.json
+npx prettier@3.9.10 --check README.md .prettierrc.json 'tests/fixtures/*.json'
 ```
 
 `--locked` prevents changes to `Cargo.lock`; `--offline` prevents Cargo from
