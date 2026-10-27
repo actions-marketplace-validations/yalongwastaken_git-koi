@@ -28,6 +28,7 @@ GitHub contribution history and repository language shares.
   [Cargo.toml](Cargo.toml).
 - A native linker for your target platform.
 - Node.js and npm for documentation formatting with Prettier 3.9.10.
+- The [GitHub CLI](https://cli.github.com), authenticated, for collection.
 
 ### Build and Run
 
@@ -36,11 +37,37 @@ Run from the repository root:
 ```sh
 cargo fetch --locked
 cargo build --release --offline --locked
-./target/release/git-koi
+./target/release/git-koi --help
 ```
 
-The executable is a scaffold: it exits successfully without output. It does not
-generate koi or provide command-line options yet.
+### Collection
+
+`git-koi collect LOGIN` gathers an account snapshot through `gh api` and writes
+it as JSON to standard output. With `--output FILE`, it replaces the file only
+after collection succeeds, so a failed run keeps the previous snapshot.
+
+```sh
+./target/release/git-koi collect octocat --output snapshot.json
+```
+
+The snapshot holds the account's numeric ID, its public repositories, the public
+repositories GitHub counts it as contributing to, and its daily contribution
+counts from account creation through the latest date GitHub reports. Only public
+data is read, so a GitHub Actions workflow can collect with its built-in token:
+
+```yaml
+env:
+  GH_TOKEN: ${{ github.token }}
+```
+
+The calendar is requested a year at a time and its dates are in UTC; the
+observation date is the latest date GitHub reports. Before writing, the snapshot
+is checked against the history rules below, so gaps, conflicting days, or a
+calendar that starts after the account was created fail instead of producing a
+partial snapshot. Success prints only the snapshot. Collection errors go to
+standard error and exit 1; invalid usage exits 2. See
+[the collection contract](src/collect.rs) and exercise it with
+`cargo test --offline --locked --test collect`.
 
 ### Account Snapshots
 

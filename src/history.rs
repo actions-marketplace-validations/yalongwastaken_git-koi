@@ -9,8 +9,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 /// GitHub observations supplied by the caller, readable and writable through Serde.
 ///
-/// The caller supplies the complete collection of owned and GitHub-recognized
-/// contributed repositories. Parsing verifies the format, not collection completeness.
+/// The caller supplies the owned and GitHub-recognized contributed repositories; only
+/// public, non-fork ones affect language shares, so a public-only collection is enough.
+/// Parsing verifies the format, not collection completeness.
 /// Older snapshots remain usable for language shares but have no contribution history.
 /// Serialization selects the format from the available observations. Unknown fields,
 /// unsupported versions, and missing fields within a supported format are rejected.
