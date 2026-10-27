@@ -3,11 +3,12 @@
 
 use std::f64::consts::{PI, TAU};
 
+use crate::behavior::Behavior;
 use crate::coat::{KoiBody, KoiCoat, WHITE_RAMP};
 use crate::koi::{
     ADULT_CONTRIBUTIONS, KoiDevelopment, YOUNG_SHAPE_CONTRIBUTIONS, calculate_growth_fraction,
 };
-use crate::motion::{STILL_POSE, SwimPose, calculate_cruise_pose};
+use crate::motion::{STILL_POSE, SwimPose, calculate_swim_pose};
 
 pub const FRAME_WIDTH_PIXELS: u32 = 256;
 pub const FRAME_HEIGHT_PIXELS: u32 = FRAME_WIDTH_PIXELS;
@@ -41,16 +42,17 @@ pub fn render_koi(koi_development: &KoiDevelopment, koi_body: KoiBody) -> KoiFra
     )
 }
 
-/// Render one frame of the seamless cruise loop, colored like `render_koi`. The koi
-/// swims a clockwise lap around the frame center with a body wave that beats and
-/// glides; frame numbers wrap around the loop of `motion::CRUISE_FRAME_COUNT` frames.
-/// The view stays on the lap center, and longer koi swim a tighter lap so every size
-/// fits. The fins and whiskers move with the stroke, as `motion::SwimPose` describes.
-/// Identical inputs produce identical pixels without I/O, clock reads, or input
-/// mutation.
+/// Render one frame of a behavior's seamless loop, colored like `render_koi`. The koi
+/// swims clockwise laps around the frame center with a body wave that beats and
+/// glides; frame numbers wrap around the loop of `motion::frame_count(behavior)`
+/// frames. The view stays on the lap center, and longer koi swim a tighter lap so
+/// every size fits. The fins and whiskers move with the stroke, as `motion::SwimPose`
+/// describes. Identical inputs produce identical pixels without I/O, clock reads, or
+/// input mutation.
 pub fn render_swim_frame(
     koi_development: &KoiDevelopment,
     koi_body: KoiBody,
+    behavior: Behavior,
     frame_index: u32,
 ) -> KoiFrame {
     let koi_anatomy = calculate_anatomy(koi_development.total_contributions);
@@ -62,7 +64,7 @@ pub fn render_swim_frame(
         koi_body,
         &koi_anatomy,
         spine_path,
-        &calculate_cruise_pose(frame_index),
+        &calculate_swim_pose(behavior, frame_index),
     )
 }
 

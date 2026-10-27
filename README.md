@@ -204,22 +204,24 @@ Exercise the rendering and encoding boundary with
 
 ### Swimming
 
-`render::render_swim_frame` draws one frame of an eight-second cruise loop at
+`render::render_swim_frame` draws one frame of a behavior's eight-second loop at
 `motion::FRAMES_PER_SECOND`, colored and marked like the still koi. The koi
-swims a clockwise lap around the frame center. A wave travels from head to tail,
-growing toward the tail, and beats in two strokes per loop, each followed by a
-glide in which the koi coasts. The lap is as wide as the frame allows and
-tighter for longer koi, so every size fits, and the view stays on the lap
-center. Strokes, waves, and the lap close on whole numbers each loop, so the
-last frame flows into the first; frame numbers wrap around the loop of
-`motion::CRUISE_FRAME_COUNT` frames. The tail lobes bend behind the wave,
-slightly out of step, and the tail fan opens on each stroke. The side fins brake
-open on the glide, scull in opposite directions, and flare on the inside of the
-turn, with their tips trailing their roots; the pelvic fins follow, and the
-whiskers sway. `motion::calculate_cruise_pose` returns each frame's pose, and
-`render::render_koi` still draws the fixed pose for static exports. Frame timing
-lives in `src/motion.rs`, and the lap geometry in `src/render.rs`. Exercise the
-poses with `cargo test --offline --locked --test motion`.
+swims clockwise laps around the frame center. A wave travels from head to tail,
+growing toward the tail, and beats in strokes, each followed by a glide in which
+the koi coasts. Cruising swims one slow lap of two strokes. Darting swims two
+fast laps of four bursts, with the side fins tucked through each burst and
+spread through the glide. The lap is as wide as the frame allows and tighter for
+longer koi, so every size fits, and the view stays on the lap center. Strokes,
+waves, and laps close on whole numbers each loop, so the last frame flows into
+the first; frame numbers wrap around the loop of `motion::frame_count` frames.
+The tail lobes bend behind the wave, slightly out of step, and the tail fan
+opens on each stroke. The side fins scull in opposite directions and flare on
+the inside of the turn, with their tips trailing their roots; the pelvic fins
+follow, and the whiskers sway. Rest and deep rest swim the cruise until their
+own movements are drawn. `motion::calculate_swim_pose` returns each frame's
+pose, and `render::render_koi` still draws the fixed pose for static exports.
+Frame timing lives in `src/motion.rs`, and the lap geometry in `src/render.rs`.
+Exercise the poses with `cargo test --offline --locked --test motion`.
 
 ### Behavior
 
@@ -237,8 +239,8 @@ recent activity. The first matching rule wins:
 Quiet days run up to the observation date. A standout week needs at least ten
 complete Monday-Sunday weeks of history, so a steady account cruises. Behavior
 changes only movement; growth, colors, and marks stay as they are. The rules and
-thresholds live in `src/behavior.rs`. Only cruise is drawn so far. Exercise the
-rules with `cargo test --offline --locked --test behavior`.
+thresholds live in `src/behavior.rs`. Cruise and dart are drawn so far. Exercise
+the rules with `cargo test --offline --locked --test behavior`.
 
 ### Koi Library
 
