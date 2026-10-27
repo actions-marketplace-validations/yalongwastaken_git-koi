@@ -211,9 +211,14 @@ glide in which the koi coasts. The lap is as wide as the frame allows and
 tighter for longer koi, so every size fits, and the view stays on the lap
 center. Strokes, waves, and the lap close on whole numbers each loop, so the
 last frame flows into the first; frame numbers wrap around the loop of
-`motion::CRUISE_FRAME_COUNT` frames. The fins keep their still shapes.
+`motion::CRUISE_FRAME_COUNT` frames. The tail lobes bend behind the wave,
+slightly out of step, and the tail fan opens on each stroke. The side fins brake
+open on the glide, scull in opposite directions, and flare on the inside of the
+turn, with their tips trailing their roots; the pelvic fins follow, and the
+whiskers sway. `motion::calculate_cruise_pose` returns each frame's pose, and
 `render::render_koi` still draws the fixed pose for static exports. Frame timing
-lives in `src/motion.rs`, and the lap geometry in `src/render.rs`.
+lives in `src/motion.rs`, and the lap geometry in `src/render.rs`. Exercise the
+poses with `cargo test --offline --locked --test motion`.
 
 ### Koi Library
 

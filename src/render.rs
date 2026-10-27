@@ -7,7 +7,7 @@ use crate::coat::{KoiBody, KoiCoat, WHITE_RAMP};
 use crate::koi::{
     ADULT_CONTRIBUTIONS, KoiDevelopment, YOUNG_SHAPE_CONTRIBUTIONS, calculate_growth_fraction,
 };
-use crate::motion::{STILL_WAVE_PHASE_RADIANS, calculate_cruise_pose};
+use crate::motion::{STILL_POSE, SwimPose, calculate_cruise_pose};
 
 pub const FRAME_WIDTH_PIXELS: u32 = 256;
 pub const FRAME_HEIGHT_PIXELS: u32 = FRAME_WIDTH_PIXELS;
@@ -32,51 +32,54 @@ impl KoiFrame {
 /// reads, or input mutation.
 pub fn render_koi(koi_development: &KoiDevelopment, koi_body: KoiBody) -> KoiFrame {
     let koi_anatomy = calculate_anatomy(koi_development.total_contributions);
-    let body_pose = BodyPose {
-        spine_path: SpinePath::Still,
-        wave_phase_radians: STILL_WAVE_PHASE_RADIANS,
-        wave_strength: 1.0,
-    };
-    render_pose(koi_development, koi_body, &koi_anatomy, &body_pose)
+    render_pose(
+        koi_development,
+        koi_body,
+        &koi_anatomy,
+        SpinePath::Still,
+        &STILL_POSE,
+    )
 }
 
 /// Render one frame of the seamless cruise loop, colored like `render_koi`. The koi
 /// swims a clockwise lap around the frame center with a body wave that beats and
 /// glides; frame numbers wrap around the loop of `motion::CRUISE_FRAME_COUNT` frames.
 /// The view stays on the lap center, and longer koi swim a tighter lap so every size
-/// fits. Fins keep their still shapes. Identical inputs produce identical pixels
-/// without I/O, clock reads, or input mutation.
+/// fits. The fins and whiskers move with the stroke, as `motion::SwimPose` describes.
+/// Identical inputs produce identical pixels without I/O, clock reads, or input
+/// mutation.
 pub fn render_swim_frame(
     koi_development: &KoiDevelopment,
     koi_body: KoiBody,
     frame_index: u32,
 ) -> KoiFrame {
     let koi_anatomy = calculate_anatomy(koi_development.total_contributions);
-    let swim_pose = calculate_cruise_pose(frame_index);
-    let body_pose = BodyPose {
-        spine_path: SpinePath::Lap {
-            radius_pixels: calculate_lap_radius(koi_anatomy.body_length_pixels),
-            head_angle_radians: swim_pose.lap_angle_radians,
-        },
-        wave_phase_radians: swim_pose.wave_phase_radians,
-        wave_strength: swim_pose.wave_strength,
+    let spine_path = SpinePath::Lap {
+        radius_pixels: calculate_lap_radius(koi_anatomy.body_length_pixels),
     };
-    render_pose(koi_development, koi_body, &koi_anatomy, &body_pose)
+    render_pose(
+        koi_development,
+        koi_body,
+        &koi_anatomy,
+        spine_path,
+        &calculate_cruise_pose(frame_index),
+    )
 }
 
 fn render_pose(
     koi_development: &KoiDevelopment,
     koi_body: KoiBody,
     koi_anatomy: &KoiAnatomy,
-    body_pose: &BodyPose,
+    spine_path: SpinePath,
+    swim_pose: &SwimPose,
 ) -> KoiFrame {
     let koi_coat = KoiCoat::new(koi_development, koi_body, |along_fraction| {
         calculate_body_half_width(along_fraction, koi_anatomy)
     });
-    let body_spine = build_spine(koi_anatomy, body_pose);
-    let fin_curves = build_fins(&body_spine, koi_anatomy);
+    let body_spine = build_spine(koi_anatomy, spine_path, swim_pose);
+    let fin_curves = build_fins(&body_spine, koi_anatomy, swim_pose);
     let [min_corner, max_corner] = measure_curve_bounds(&body_spine, &fin_curves);
-    let pose_center = match body_pose.spine_path {
+    let pose_center = match spine_path {
         SpinePath::Still => [
             (min_corner[0] + max_corner[0]) / 2.0,
             (min_corner[1] + max_corner[1]) / 2.0,
@@ -112,7 +115,13 @@ fn render_pose(
             });
         }
     }
-    paint_whiskers(&mut rgba_pixels, &body_spine, koi_anatomy, pose_center);
+    paint_whiskers(
+        &mut rgba_pixels,
+        &body_spine,
+        koi_anatomy,
+        pose_center,
+        swim_pose.whisker_sway_radians,
+    );
     paint_outline(&mut rgba_pixels);
     KoiFrame { rgba_pixels }
 }
@@ -137,22 +146,13 @@ struct KoiAnatomy {
     eye_scale: f64,
 }
 
-/// Where the spine lies and how its body wave looks in one frame.
-struct BodyPose {
-    spine_path: SpinePath,
-    wave_phase_radians: f64,
-    /// Multiplies the still pose's wave amplitude.
-    wave_strength: f64,
-}
-
+#[derive(Clone, Copy)]
 enum SpinePath {
     /// A fixed heading with a gentle bend, centered on the fish.
     Still,
-    /// Along a clockwise circle around the frame center, head first.
-    Lap {
-        radius_pixels: f64,
-        head_angle_radians: f64,
-    },
+    /// Along a clockwise circle around the frame center, head first at the pose's lap
+    /// angle.
+    Lap { radius_pixels: f64 },
 }
 
 struct KoiAppearance<'a> {
@@ -210,6 +210,7 @@ impl FinShape {
 // Direction offsets in radians describe the two fins independently, relative to the
 // spine's backward tangent.
 struct FinPair {
+    fin_kind: FinKind,
     root_along_fraction: f64,
     root_side_fraction: f64,
     young_shape: FinShape,
@@ -217,8 +218,16 @@ struct FinPair {
     direction_offsets: [&'static [f64]; 2],
 }
 
+#[derive(Clone, Copy)]
+enum FinKind {
+    Tail,
+    Side,
+    Pelvic,
+}
+
 const FIN_PAIRS: [FinPair; 3] = [
     FinPair {
+        fin_kind: FinKind::Tail,
         root_along_fraction: 1.0,
         root_side_fraction: 0.0,
         young_shape: FinShape {
@@ -239,6 +248,7 @@ const FIN_PAIRS: [FinPair; 3] = [
         ],
     },
     FinPair {
+        fin_kind: FinKind::Side,
         root_along_fraction: 0.22,
         root_side_fraction: 0.8,
         young_shape: FinShape {
@@ -259,6 +269,7 @@ const FIN_PAIRS: [FinPair; 3] = [
         ],
     },
     FinPair {
+        fin_kind: FinKind::Pelvic,
         root_along_fraction: 0.47,
         root_side_fraction: 0.7,
         young_shape: FinShape {
@@ -361,7 +372,11 @@ fn smooth_step(fraction: f64) -> f64 {
     fraction * fraction * (3.0 - 2.0 * fraction)
 }
 
-fn build_spine(koi_anatomy: &KoiAnatomy, body_pose: &BodyPose) -> Vec<CurvePoint> {
+fn build_spine(
+    koi_anatomy: &KoiAnatomy,
+    spine_path: SpinePath,
+    swim_pose: &SwimPose,
+) -> Vec<CurvePoint> {
     const HEADING_RADIANS: f64 = -0.08;
     const BEND_RADIANS: f64 = 0.35;
     const WAVE_AMPLITUDE_FRACTION: f64 = 0.06;
@@ -373,7 +388,7 @@ fn build_spine(koi_anatomy: &KoiAnatomy, body_pose: &BodyPose) -> Vec<CurvePoint
         calculate_body_half_width(point_index as f64 / point_count as f64, koi_anatomy)
             .max(MIN_HALF_WIDTH_PIXELS)
     };
-    let center_points = match body_pose.spine_path {
+    let center_points = match spine_path {
         SpinePath::Still => {
             let mut center_points = vec![CurvePoint {
                 position: [0.0, 0.0],
@@ -394,12 +409,10 @@ fn build_spine(koi_anatomy: &KoiAnatomy, body_pose: &BodyPose) -> Vec<CurvePoint
             center_points
         }
         // Each body point sits one pixel of arc behind the one in front.
-        SpinePath::Lap {
-            radius_pixels,
-            head_angle_radians,
-        } => (0..point_count)
+        SpinePath::Lap { radius_pixels } => (0..point_count)
             .map(|point_index| {
-                let point_angle_radians = head_angle_radians - point_index as f64 / radius_pixels;
+                let point_angle_radians =
+                    swim_pose.lap_angle_radians - point_index as f64 / radius_pixels;
                 CurvePoint {
                     position: [
                         radius_pixels * point_angle_radians.cos(),
@@ -419,9 +432,9 @@ fn build_spine(koi_anatomy: &KoiAnatomy, body_pose: &BodyPose) -> Vec<CurvePoint
             head_wave_fraction + (1.0 - head_wave_fraction) * along_fraction.powi(2);
         let wave_offset = body_length_pixels
             * WAVE_AMPLITUDE_FRACTION
-            * body_pose.wave_strength
+            * swim_pose.wave_strength
             * wave_envelope
-            * (along_fraction * TAU * WAVE_CYCLES - body_pose.wave_phase_radians).sin();
+            * (along_fraction * TAU * WAVE_CYCLES - swim_pose.wave_phase_radians).sin();
         body_spine.push(CurvePoint {
             position: [
                 center_point.position[0] - forward_direction[1] * wave_offset,
@@ -433,7 +446,13 @@ fn build_spine(koi_anatomy: &KoiAnatomy, body_pose: &BodyPose) -> Vec<CurvePoint
     body_spine
 }
 
-fn build_fins(body_spine: &[CurvePoint], koi_anatomy: &KoiAnatomy) -> Vec<Vec<CurvePoint>> {
+/// Each fin turns at its root and bends along its length as the pose says; a turn
+/// outward is away from the body, whichever side the fin is on.
+fn build_fins(
+    body_spine: &[CurvePoint],
+    koi_anatomy: &KoiAnatomy,
+    swim_pose: &SwimPose,
+) -> Vec<Vec<CurvePoint>> {
     let mut fin_curves = Vec::new();
     for fin_pair in &FIN_PAIRS {
         let root_index =
@@ -441,9 +460,23 @@ fn build_fins(body_spine: &[CurvePoint], koi_anatomy: &KoiAnatomy) -> Vec<Vec<Cu
         let root_point = body_spine[root_index];
         let forward_direction = calculate_forward_direction(body_spine, root_index);
         let backward_angle_radians = (-forward_direction[1]).atan2(-forward_direction[0]);
-        for (body_side, direction_offsets) in
-            [-1.0, 1.0].into_iter().zip(fin_pair.direction_offsets)
+        for (side_index, (body_side, direction_offsets)) in [-1.0, 1.0]
+            .into_iter()
+            .zip(fin_pair.direction_offsets)
+            .enumerate()
         {
+            let outward_sign = direction_offsets[0].signum();
+            let (root_turn_radians, bend_radians) = match fin_pair.fin_kind {
+                FinKind::Tail => (
+                    outward_sign * swim_pose.tail_spread_radians,
+                    swim_pose.tail_lobe_bends_radians[side_index],
+                ),
+                FinKind::Side => (
+                    outward_sign * swim_pose.side_fin_openings_radians[side_index],
+                    outward_sign * swim_pose.side_fin_bends_radians[side_index],
+                ),
+                FinKind::Pelvic => (outward_sign * swim_pose.pelvic_fin_opening_radians, 0.0),
+            };
             let root_offset_pixels =
                 root_point.half_width_pixels * fin_pair.root_side_fraction * body_side;
             let root_position = [
@@ -453,9 +486,10 @@ fn build_fins(body_spine: &[CurvePoint], koi_anatomy: &KoiAnatomy) -> Vec<Vec<Cu
             fin_curves.push(build_fin(
                 fin_pair,
                 root_position,
-                backward_angle_radians,
+                backward_angle_radians + root_turn_radians,
                 koi_anatomy,
                 direction_offsets,
+                bend_radians,
             ));
         }
     }
@@ -468,6 +502,7 @@ fn build_fin(
     backward_angle_radians: f64,
     koi_anatomy: &KoiAnatomy,
     direction_offsets: &[f64],
+    bend_radians: f64,
 ) -> Vec<CurvePoint> {
     let fin_shape = fin_pair
         .young_shape
@@ -499,20 +534,23 @@ fn build_fin(
         let end_angle = direction_offsets[(direction_index + 1).min(direction_offsets.len() - 1)];
         let segment_angle = backward_angle_radians
             + start_angle
-            + (end_angle - start_angle) * direction_position.fract();
+            + (end_angle - start_angle) * direction_position.fract()
+            + bend_radians * along_fraction;
         center_position[0] += segment_length_pixels * segment_angle.cos();
         center_position[1] += segment_length_pixels * segment_angle.sin();
     }
     fin_points
 }
 
-/// Paint short whiskers angled forward and out from the edge of the snout. They fill only
-/// empty pixels and are painted before the outline, so they are outlined like the koi.
+/// Paint short whiskers angled forward and out from the edge of the snout, swung
+/// together by the sway. They fill only empty pixels and are painted before the
+/// outline, so they are outlined like the koi.
 fn paint_whiskers(
     rgba_pixels: &mut [[u8; 4]],
     body_spine: &[CurvePoint],
     koi_anatomy: &KoiAnatomy,
     pose_center: [f64; 2],
+    sway_radians: f64,
 ) {
     const SPREAD_RADIANS: f64 = 0.85;
     const BODY_PIXELS_PER_WHISKER_PIXEL: f64 = 34.0;
@@ -536,7 +574,7 @@ fn paint_whiskers(
                 + forward_direction[0] * side_offset_pixels
                 + forward_direction[1] * forward_offset_pixels,
         ];
-        let whisker_angle = heading_radians + body_side * SPREAD_RADIANS;
+        let whisker_angle = heading_radians + sway_radians + body_side * SPREAD_RADIANS;
         for step_pixels in 1..=whisker_length_pixels {
             let pixel_x = (root_position[0] + whisker_angle.cos() * f64::from(step_pixels)
                 - pose_center[0]
