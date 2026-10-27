@@ -8,8 +8,11 @@ use git_koi::koi::{
     ADULT_CONTRIBUTIONS, FULL_COLOR_CONTRIBUTIONS, KoiDevelopment, MAX_GROWTH_CONTRIBUTIONS,
     RecentStreak, derive_koi_development,
 };
+use git_koi::motion::CRUISE_FRAME_COUNT;
 use git_koi::output::encode_png;
-use git_koi::render::{FRAME_HEIGHT_PIXELS, FRAME_WIDTH_PIXELS, KoiFrame, render_koi};
+use git_koi::render::{
+    FRAME_HEIGHT_PIXELS, FRAME_WIDTH_PIXELS, KoiFrame, render_koi, render_swim_frame,
+};
 
 type LanguageMix<'a> = &'a [(&'a str, Option<&'a str>, f64)];
 
@@ -350,6 +353,63 @@ fn growth_slows_and_keeps_the_whole_fish_inside_a_transparent_frame() {
 }
 
 #[test]
+fn swimming_keeps_the_whole_fish_inside_the_frame() {
+    let mut koi_development = develop_with_languages(0, FOUR_LANGUAGE_MIX);
+    for contribution_total in [0, 1_500, ADULT_CONTRIBUTIONS, MAX_GROWTH_CONTRIBUTIONS] {
+        koi_development.total_contributions = contribution_total;
+        for frame_index in (0..CRUISE_FRAME_COUNT).step_by(8) {
+            let opaque_bounds = measure_opaque_bounds(&render_swim_frame(
+                &koi_development,
+                KoiBody::default(),
+                frame_index,
+            ));
+            assert!(
+                opaque_bounds.left_x > 0
+                    && opaque_bounds.top_y > 0
+                    && opaque_bounds.right_x < FRAME_WIDTH_PIXELS - 1
+                    && opaque_bounds.bottom_y < FRAME_HEIGHT_PIXELS - 1,
+                "{contribution_total} contributions leaves the frame at frame {frame_index}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_swim_loop_is_seamless_and_never_jumps() {
+    let koi_development = develop_with_languages(1_500, FOUR_LANGUAGE_MIX);
+    let swim_frames: Vec<_> = (0..=CRUISE_FRAME_COUNT)
+        .map(|frame_index| render_swim_frame(&koi_development, KoiBody::default(), frame_index))
+        .collect();
+    assert_eq!(swim_frames[CRUISE_FRAME_COUNT as usize], swim_frames[0]);
+    let centroids: Vec<_> = swim_frames.iter().map(measure_opaque_centroid).collect();
+    let centroid_steps: Vec<f64> = centroids
+        .windows(2)
+        .map(|centroid_pair| {
+            (centroid_pair[1][0] - centroid_pair[0][0])
+                .hypot(centroid_pair[1][1] - centroid_pair[0][1])
+        })
+        .collect();
+    assert!(
+        centroid_steps
+            .iter()
+            .all(|&centroid_step| centroid_step > 0.0 && centroid_step < 8.0),
+        "{centroid_steps:?}"
+    );
+    let boundary_step = centroid_steps[CRUISE_FRAME_COUNT as usize - 1];
+    let nearby_steps =
+        &centroid_steps[CRUISE_FRAME_COUNT as usize - 6..CRUISE_FRAME_COUNT as usize - 1];
+    let nearby_average = nearby_steps.iter().sum::<f64>() / nearby_steps.len() as f64;
+    assert!((0.5..1.5).contains(&(boundary_step / nearby_average)));
+    let opaque_counts: Vec<_> = swim_frames
+        .iter()
+        .map(|swim_frame| collect_opaque_pixel_count(swim_frame) as f64)
+        .collect();
+    for count_pair in opaque_counts.windows(2) {
+        assert!((count_pair[1] - count_pair[0]).abs() < 0.1 * count_pair[0]);
+    }
+}
+
+#[test]
 fn png_output_doubles_each_pixel_and_repeats_exactly() {
     let mut koi_development = read_fixture_development();
     koi_development.total_contributions = 1_500;
@@ -458,6 +518,38 @@ fn build_weeks(week_count: usize) -> Vec<ContributionWeek> {
             observed_day_count: 7,
         })
         .collect()
+}
+
+fn collect_opaque_pixel_count(koi_frame: &KoiFrame) -> usize {
+    koi_frame
+        .as_rgba_bytes()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|pixel_channels| pixel_channels[3] != 0)
+        .count()
+}
+
+fn measure_opaque_centroid(koi_frame: &KoiFrame) -> [f64; 2] {
+    let mut position_sum = [0.0; 2];
+    let mut opaque_pixel_count = 0.0;
+    for (pixel_index, pixel_channels) in koi_frame
+        .as_rgba_bytes()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .enumerate()
+    {
+        if pixel_channels[3] != 0 {
+            position_sum[0] += (pixel_index as u32 % FRAME_WIDTH_PIXELS) as f64;
+            position_sum[1] += (pixel_index as u32 / FRAME_WIDTH_PIXELS) as f64;
+            opaque_pixel_count += 1.0;
+        }
+    }
+    [
+        position_sum[0] / opaque_pixel_count,
+        position_sum[1] / opaque_pixel_count,
+    ]
 }
 
 fn collect_opaque_colors(koi_frame: &KoiFrame) -> BTreeSet<[u8; 4]> {

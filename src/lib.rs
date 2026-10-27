@@ -3,5 +3,6 @@ pub mod collect;
 pub mod history;
 pub mod koi;
 pub mod markings;
+pub mod motion;
 pub mod output;
 pub mod render;

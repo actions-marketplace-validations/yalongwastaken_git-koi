@@ -201,6 +201,20 @@ to the caller.
 Exercise the rendering and encoding boundary with
 `cargo test --offline --locked --test render`.
 
+### Swimming
+
+`render::render_swim_frame` draws one frame of an eight-second cruise loop at
+`motion::FRAMES_PER_SECOND`, colored and marked like the still koi. The koi
+swims a clockwise lap around the frame center. A wave travels from head to tail,
+growing toward the tail, and beats in two strokes per loop, each followed by a
+glide in which the koi coasts. The lap is as wide as the frame allows and
+tighter for longer koi, so every size fits, and the view stays on the lap
+center. Strokes, waves, and the lap close on whole numbers each loop, so the
+last frame flows into the first; frame numbers wrap around the loop of
+`motion::CRUISE_FRAME_COUNT` frames. The fins keep their still shapes.
+`render::render_koi` still draws the fixed pose for static exports. Frame timing
+lives in `src/motion.rs`, and the lap geometry in `src/render.rs`.
+
 ### Koi Library
 
 The generated library shows one-, two-, three-, and four-language mixes on the

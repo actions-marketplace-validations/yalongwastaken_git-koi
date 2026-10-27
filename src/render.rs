@@ -7,6 +7,7 @@ use crate::coat::{KoiBody, KoiCoat, WHITE_RAMP};
 use crate::koi::{
     ADULT_CONTRIBUTIONS, KoiDevelopment, YOUNG_SHAPE_CONTRIBUTIONS, calculate_growth_fraction,
 };
+use crate::motion::{STILL_WAVE_PHASE_RADIANS, calculate_cruise_pose};
 
 pub const FRAME_WIDTH_PIXELS: u32 = 256;
 pub const FRAME_HEIGHT_PIXELS: u32 = FRAME_WIDTH_PIXELS;
@@ -31,14 +32,59 @@ impl KoiFrame {
 /// reads, or input mutation.
 pub fn render_koi(koi_development: &KoiDevelopment, koi_body: KoiBody) -> KoiFrame {
     let koi_anatomy = calculate_anatomy(koi_development.total_contributions);
+    let body_pose = BodyPose {
+        spine_path: SpinePath::Still,
+        wave_phase_radians: STILL_WAVE_PHASE_RADIANS,
+        wave_strength: 1.0,
+    };
+    render_pose(koi_development, koi_body, &koi_anatomy, &body_pose)
+}
+
+/// Render one frame of the seamless cruise loop, colored like `render_koi`. The koi
+/// swims a clockwise lap around the frame center with a body wave that beats and
+/// glides; frame numbers wrap around the loop of `motion::CRUISE_FRAME_COUNT` frames.
+/// The view stays on the lap center, and longer koi swim a tighter lap so every size
+/// fits. Fins keep their still shapes. Identical inputs produce identical pixels
+/// without I/O, clock reads, or input mutation.
+pub fn render_swim_frame(
+    koi_development: &KoiDevelopment,
+    koi_body: KoiBody,
+    frame_index: u32,
+) -> KoiFrame {
+    let koi_anatomy = calculate_anatomy(koi_development.total_contributions);
+    let swim_pose = calculate_cruise_pose(frame_index);
+    let body_pose = BodyPose {
+        spine_path: SpinePath::Lap {
+            radius_pixels: calculate_lap_radius(koi_anatomy.body_length_pixels),
+            head_angle_radians: swim_pose.lap_angle_radians,
+        },
+        wave_phase_radians: swim_pose.wave_phase_radians,
+        wave_strength: swim_pose.wave_strength,
+    };
+    render_pose(koi_development, koi_body, &koi_anatomy, &body_pose)
+}
+
+fn render_pose(
+    koi_development: &KoiDevelopment,
+    koi_body: KoiBody,
+    koi_anatomy: &KoiAnatomy,
+    body_pose: &BodyPose,
+) -> KoiFrame {
     let koi_coat = KoiCoat::new(koi_development, koi_body, |along_fraction| {
-        calculate_body_half_width(along_fraction, &koi_anatomy)
+        calculate_body_half_width(along_fraction, koi_anatomy)
     });
-    let body_spine = build_spine(&koi_anatomy);
-    let fin_curves = build_fins(&body_spine, &koi_anatomy);
-    let pose_center = calculate_pose_center(&body_spine, &fin_curves);
+    let body_spine = build_spine(koi_anatomy, body_pose);
+    let fin_curves = build_fins(&body_spine, koi_anatomy);
+    let [min_corner, max_corner] = measure_curve_bounds(&body_spine, &fin_curves);
+    let pose_center = match body_pose.spine_path {
+        SpinePath::Still => [
+            (min_corner[0] + max_corner[0]) / 2.0,
+            (min_corner[1] + max_corner[1]) / 2.0,
+        ],
+        SpinePath::Lap { .. } => [0.0, 0.0],
+    };
     let koi_appearance = KoiAppearance {
-        koi_anatomy: &koi_anatomy,
+        koi_anatomy,
         koi_coat: &koi_coat,
     };
     let mut rgba_pixels = Vec::with_capacity((FRAME_WIDTH_PIXELS * FRAME_HEIGHT_PIXELS) as usize);
@@ -48,16 +94,25 @@ pub fn render_koi(koi_development: &KoiDevelopment, koi_body: KoiBody) -> KoiFra
                 f64::from(pixel_x) + 0.5 - f64::from(FRAME_WIDTH_PIXELS) / 2.0 + pose_center[0],
                 f64::from(pixel_y) + 0.5 - f64::from(FRAME_HEIGHT_PIXELS) / 2.0 + pose_center[1],
             ];
-            rgba_pixels.push(sample_koi(
-                &body_spine,
-                &fin_curves,
-                sample_position,
-                [pixel_x, pixel_y],
-                &koi_appearance,
-            ));
+            // Nothing outside the curves' bounds can be covered, so skip sampling it.
+            let is_inside_bounds = (0..2).all(|axis_index| {
+                (min_corner[axis_index]..=max_corner[axis_index])
+                    .contains(&sample_position[axis_index])
+            });
+            rgba_pixels.push(if is_inside_bounds {
+                sample_koi(
+                    &body_spine,
+                    &fin_curves,
+                    sample_position,
+                    [pixel_x, pixel_y],
+                    &koi_appearance,
+                )
+            } else {
+                [0; 4]
+            });
         }
     }
-    paint_whiskers(&mut rgba_pixels, &body_spine, &koi_anatomy, pose_center);
+    paint_whiskers(&mut rgba_pixels, &body_spine, koi_anatomy, pose_center);
     paint_outline(&mut rgba_pixels);
     KoiFrame { rgba_pixels }
 }
@@ -80,6 +135,24 @@ struct KoiAnatomy {
     eye_along_fraction: f64,
     /// Young koi have proportionally larger eyes; adults use 1.
     eye_scale: f64,
+}
+
+/// Where the spine lies and how its body wave looks in one frame.
+struct BodyPose {
+    spine_path: SpinePath,
+    wave_phase_radians: f64,
+    /// Multiplies the still pose's wave amplitude.
+    wave_strength: f64,
+}
+
+enum SpinePath {
+    /// A fixed heading with a gentle bend, centered on the fish.
+    Still,
+    /// Along a clockwise circle around the frame center, head first.
+    Lap {
+        radius_pixels: f64,
+        head_angle_radians: f64,
+    },
 }
 
 struct KoiAppearance<'a> {
@@ -288,35 +361,55 @@ fn smooth_step(fraction: f64) -> f64 {
     fraction * fraction * (3.0 - 2.0 * fraction)
 }
 
-fn build_spine(koi_anatomy: &KoiAnatomy) -> Vec<CurvePoint> {
+fn build_spine(koi_anatomy: &KoiAnatomy, body_pose: &BodyPose) -> Vec<CurvePoint> {
     const HEADING_RADIANS: f64 = -0.08;
     const BEND_RADIANS: f64 = 0.35;
     const WAVE_AMPLITUDE_FRACTION: f64 = 0.06;
-    const WAVE_PHASE_RADIANS: f64 = 0.8;
     const WAVE_CYCLES: f64 = 0.9;
     let body_length_pixels = koi_anatomy.body_length_pixels;
     let point_count = body_length_pixels.round() as usize;
     const MIN_HALF_WIDTH_PIXELS: f64 = 1.3;
-    let mut center_points = vec![CurvePoint {
-        position: [0.0, 0.0],
-        half_width_pixels: calculate_body_half_width(0.0, koi_anatomy).max(MIN_HALF_WIDTH_PIXELS),
-    }];
-    for point_index in 1..point_count {
-        let backward_angle_radians =
-            HEADING_RADIANS + PI + BEND_RADIANS * point_index as f64 / point_count as f64;
-        let [previous_x, previous_y] = center_points[point_index - 1].position;
-        center_points.push(CurvePoint {
-            position: [
-                previous_x + backward_angle_radians.cos(),
-                previous_y + backward_angle_radians.sin(),
-            ],
-            half_width_pixels: calculate_body_half_width(
-                point_index as f64 / point_count as f64,
-                koi_anatomy,
-            )
-            .max(MIN_HALF_WIDTH_PIXELS),
-        });
-    }
+    let calculate_point_half_width = |point_index: usize| {
+        calculate_body_half_width(point_index as f64 / point_count as f64, koi_anatomy)
+            .max(MIN_HALF_WIDTH_PIXELS)
+    };
+    let center_points = match body_pose.spine_path {
+        SpinePath::Still => {
+            let mut center_points = vec![CurvePoint {
+                position: [0.0, 0.0],
+                half_width_pixels: calculate_point_half_width(0),
+            }];
+            for point_index in 1..point_count {
+                let backward_angle_radians =
+                    HEADING_RADIANS + PI + BEND_RADIANS * point_index as f64 / point_count as f64;
+                let [previous_x, previous_y] = center_points[point_index - 1].position;
+                center_points.push(CurvePoint {
+                    position: [
+                        previous_x + backward_angle_radians.cos(),
+                        previous_y + backward_angle_radians.sin(),
+                    ],
+                    half_width_pixels: calculate_point_half_width(point_index),
+                });
+            }
+            center_points
+        }
+        // Each body point sits one pixel of arc behind the one in front.
+        SpinePath::Lap {
+            radius_pixels,
+            head_angle_radians,
+        } => (0..point_count)
+            .map(|point_index| {
+                let point_angle_radians = head_angle_radians - point_index as f64 / radius_pixels;
+                CurvePoint {
+                    position: [
+                        radius_pixels * point_angle_radians.cos(),
+                        radius_pixels * point_angle_radians.sin(),
+                    ],
+                    half_width_pixels: calculate_point_half_width(point_index),
+                }
+            })
+            .collect(),
+    };
     let mut body_spine = Vec::with_capacity(point_count);
     for (point_index, center_point) in center_points.iter().enumerate() {
         let along_fraction = point_index as f64 / point_count as f64;
@@ -326,8 +419,9 @@ fn build_spine(koi_anatomy: &KoiAnatomy) -> Vec<CurvePoint> {
             head_wave_fraction + (1.0 - head_wave_fraction) * along_fraction.powi(2);
         let wave_offset = body_length_pixels
             * WAVE_AMPLITUDE_FRACTION
+            * body_pose.wave_strength
             * wave_envelope
-            * (along_fraction * TAU * WAVE_CYCLES - WAVE_PHASE_RADIANS).sin();
+            * (along_fraction * TAU * WAVE_CYCLES - body_pose.wave_phase_radians).sin();
         body_spine.push(CurvePoint {
             position: [
                 center_point.position[0] - forward_direction[1] * wave_offset,
@@ -465,7 +559,24 @@ fn paint_whiskers(
     }
 }
 
-fn calculate_pose_center(body_spine: &[CurvePoint], fin_curves: &[Vec<CurvePoint>]) -> [f64; 2] {
+/// The lap circle's radius: as wide as the frame allows, tighter for longer koi so the
+/// whole fish stays inside, and never so tight that the body covers more than its
+/// share of the circle.
+fn calculate_lap_radius(body_length_pixels: f64) -> f64 {
+    const FRAME_REACH_PIXELS: f64 = 116.0;
+    const OUTER_REACH_FRACTION: f64 = 0.33;
+    const MAX_LAP_RADIUS_PIXELS: f64 = 88.0;
+    const MAX_BODY_SHARE_OF_LAP: f64 = 0.6;
+    (FRAME_REACH_PIXELS - OUTER_REACH_FRACTION * body_length_pixels)
+        .min(MAX_LAP_RADIUS_PIXELS)
+        .max(body_length_pixels / (TAU * MAX_BODY_SHARE_OF_LAP))
+}
+
+/// The corners of the box that holds every curve, including its half widths.
+fn measure_curve_bounds(
+    body_spine: &[CurvePoint],
+    fin_curves: &[Vec<CurvePoint>],
+) -> [[f64; 2]; 2] {
     let mut min_corner = [f64::INFINITY; 2];
     let mut max_corner = [f64::NEG_INFINITY; 2];
     for curve_point in body_spine.iter().chain(fin_curves.iter().flatten()) {
@@ -476,10 +587,7 @@ fn calculate_pose_center(body_spine: &[CurvePoint], fin_curves: &[Vec<CurvePoint
                 .max(curve_point.position[axis_index] + curve_point.half_width_pixels);
         }
     }
-    [
-        (min_corner[0] + max_corner[0]) / 2.0,
-        (min_corner[1] + max_corner[1]) / 2.0,
-    ]
+    [min_corner, max_corner]
 }
 
 fn sample_koi(
