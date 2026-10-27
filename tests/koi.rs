@@ -1,7 +1,9 @@
+use std::collections::BTreeMap;
+
 use chrono::{Days, NaiveDate};
 use git_koi::history::{
     AccountSnapshot, ConflictingRepository, ContributionDay, ContributionHistory,
-    ContributionHistoryError,
+    ContributionHistoryError, LanguageColor,
 };
 use git_koi::koi::{KoiDevelopmentError, RecentStreak, derive_koi_development};
 
@@ -200,6 +202,52 @@ fn conflicting_repositories_cannot_produce_a_partial_development_model() {
     );
 }
 
+#[test]
+fn development_carries_the_color_of_each_counted_language() {
+    let mut account_snapshot = build_snapshot_with_counts(&[1; 7]);
+    let recorded_colors = account_snapshot.language_colors.as_mut().unwrap();
+    recorded_colors.insert("C++".to_owned(), None);
+    recorded_colors.insert("Go".to_owned(), Some(LanguageColor([0x00, 0xad, 0xd8])));
+    assert_eq!(
+        derive_koi_development(&account_snapshot)
+            .unwrap()
+            .language_colors,
+        BTreeMap::from([
+            ("C++".to_owned(), None),
+            ("Python".to_owned(), Some(LanguageColor([0x35, 0x72, 0xa5]))),
+            ("Rust".to_owned(), Some(LanguageColor([0xde, 0xa5, 0x84]))),
+        ])
+    );
+}
+
+#[test]
+fn snapshots_without_language_colors_ask_for_a_new_collection() {
+    let mut account_snapshot = build_snapshot_with_counts(&[1; 7]);
+    account_snapshot
+        .language_colors
+        .as_mut()
+        .unwrap()
+        .remove("Python");
+    assert_eq!(
+        derive_koi_development(&account_snapshot),
+        Err(KoiDevelopmentError::MissingLanguageColor(
+            "Python".to_owned()
+        ))
+    );
+    account_snapshot.language_colors = None;
+    let missing_colors = derive_koi_development(&account_snapshot);
+    assert_eq!(
+        missing_colors,
+        Err(KoiDevelopmentError::MissingLanguageColors)
+    );
+    assert!(
+        missing_colors
+            .unwrap_err()
+            .to_string()
+            .contains("git-koi collect")
+    );
+}
+
 fn build_snapshot_with_counts(daily_counts: &[u32]) -> AccountSnapshot {
     let first_monday: NaiveDate = "2025-12-15".parse().unwrap();
     let contribution_days: Vec<_> = daily_counts
@@ -218,5 +266,10 @@ fn build_snapshot_with_counts(daily_counts: &[u32]) -> AccountSnapshot {
         observed_on: contribution_days.last().unwrap().date,
         days: contribution_days,
     });
+    account_snapshot.language_colors = Some(BTreeMap::from([
+        ("C++".to_owned(), Some(LanguageColor([0xf3, 0x4b, 0x7d]))),
+        ("Python".to_owned(), Some(LanguageColor([0x35, 0x72, 0xa5]))),
+        ("Rust".to_owned(), Some(LanguageColor([0xde, 0xa5, 0x84]))),
+    ]));
     account_snapshot
 }

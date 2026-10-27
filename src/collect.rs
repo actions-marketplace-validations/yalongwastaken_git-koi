@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use crate::history::{
     AccountSnapshot, ConflictingRepository, ContributionDay, ContributionHistory,
-    ContributionHistoryError, RepositoryObservation, RepositoryVisibility,
+    ContributionHistoryError, LanguageColor, RepositoryObservation, RepositoryVisibility,
     calculate_language_shares, summarize_contributions,
 };
 
@@ -58,14 +58,15 @@ impl GraphqlClient for GhCli {
 
 const ACCOUNT_QUERY: &str =
     "query($login: String!) { user(login: $login) { databaseId createdAt } }";
-const REPOSITORY_FIELDS: &str = "nodes { databaseId visibility isFork primaryLanguage { name } } pageInfo { hasNextPage endCursor }";
+const REPOSITORY_FIELDS: &str = "nodes { databaseId visibility isFork primaryLanguage { name color } } pageInfo { hasNextPage endCursor }";
 const CALENDAR_QUERY: &str = "query($login: String!, $from: DateTime!, $to: DateTime!) { \
     user(login: $login) { contributionsCollection(from: $from, to: $to) { \
     contributionCalendar { weeks { contributionDays { date contributionCount } } } } } }";
 
 /// Collect one account's public snapshot: its public owned repositories, the public
-/// repositories GitHub counts it as contributing to, and daily contribution counts from
-/// the day it was created through the latest date GitHub reports.
+/// repositories GitHub counts it as contributing to, GitHub's color for each of their
+/// languages, and daily contribution counts from the day it was created through the
+/// latest date GitHub reports.
 ///
 /// GitHub limits each calendar request to a year, so the calendar is requested a year at
 /// a time. `today` only bounds those requests; the observation date comes from GitHub.
@@ -90,15 +91,18 @@ pub fn collect_account_snapshot(
             ))
         })?
         .date_naive();
+    let mut language_colors = BTreeMap::new();
     let mut repositories = collect_repositories(
         github,
         login,
+        &mut language_colors,
         "repositories",
         "repositories(first: 100, after: $cursor, ownerAffiliations: [OWNER], privacy: PUBLIC)",
     )?;
     repositories.extend(collect_repositories(
         github,
         login,
+        &mut language_colors,
         "repositoriesContributedTo",
         "repositoriesContributedTo(first: 100, after: $cursor, privacy: PUBLIC, \
          includeUserRepositories: false, \
@@ -110,16 +114,19 @@ pub fn collect_account_snapshot(
         contribution_history: Some(collect_contribution_history(
             github, login, created_on, today,
         )?),
+        language_colors: Some(language_colors),
     };
     summarize_contributions(&account_snapshot).map_err(CollectionError::InvalidHistory)?;
     calculate_language_shares(&account_snapshot).map_err(CollectionError::ConflictingRepository)?;
     Ok(account_snapshot)
 }
 
-/// Follow every page of one repository connection on the user.
+/// Follow every page of one repository connection on the user, recording each primary
+/// language's color as it goes.
 fn collect_repositories(
     github: &impl GraphqlClient,
     login: &str,
+    language_colors: &mut BTreeMap<String, Option<LanguageColor>>,
     connection_name: &str,
     connection_call: &str,
 ) -> Result<Vec<RepositoryObservation>, CollectionError> {
@@ -136,7 +143,7 @@ fn collect_repositories(
         let page_data = github.run_query(&query, &variables)?;
         let connection = read_field(read_field(&page_data, "user")?, connection_name)?;
         for repository_node in read_array(connection, "nodes")? {
-            repositories.push(read_repository(repository_node)?);
+            repositories.push(read_repository(repository_node, language_colors)?);
         }
         let page_info = read_field(connection, "pageInfo")?;
         if !read_bool(page_info, "hasNextPage")? {
@@ -152,7 +159,10 @@ fn collect_repositories(
     }
 }
 
-fn read_repository(repository_node: &Value) -> Result<RepositoryObservation, CollectionError> {
+fn read_repository(
+    repository_node: &Value,
+    language_colors: &mut BTreeMap<String, Option<LanguageColor>>,
+) -> Result<RepositoryObservation, CollectionError> {
     let visibility = match read_str(repository_node, "visibility")? {
         "PUBLIC" => RepositoryVisibility::Public,
         "PRIVATE" => RepositoryVisibility::Private,
@@ -165,7 +175,27 @@ fn read_repository(repository_node: &Value) -> Result<RepositoryObservation, Col
     };
     let primary_language = match read_field(repository_node, "primaryLanguage")? {
         Value::Null => None,
-        language => Some(read_str(language, "name")?.to_owned()),
+        language => {
+            let language_name = read_str(language, "name")?.to_owned();
+            let language_color = match read_field(language, "color")? {
+                Value::Null => None,
+                color => Some(
+                    LanguageColor::try_from(color.as_str().ok_or_else(|| {
+                        CollectionError::UnexpectedResponse(format!(
+                            "{language_name} color is not text"
+                        ))
+                    })?)
+                    .map_err(CollectionError::UnexpectedResponse)?,
+                ),
+            };
+            if let Some(recorded_color) =
+                language_colors.insert(language_name.clone(), language_color)
+                && recorded_color != language_color
+            {
+                return Err(CollectionError::ConflictingLanguageColor(language_name));
+            }
+            Some(language_name)
+        }
     };
     Ok(RepositoryObservation {
         repository_id: read_u64(repository_node, "databaseId")?,
@@ -301,6 +331,7 @@ pub enum CollectionError {
     },
     InvalidHistory(ContributionHistoryError),
     ConflictingRepository(ConflictingRepository),
+    ConflictingLanguageColor(String),
 }
 
 impl fmt::Display for CollectionError {
@@ -344,6 +375,10 @@ impl fmt::Display for CollectionError {
             Self::ConflictingRepository(repository_error) => {
                 write!(output_formatter, "{repository_error}")
             }
+            Self::ConflictingLanguageColor(language_name) => write!(
+                output_formatter,
+                "GitHub reported two colors for {language_name}; try again"
+            ),
         }
     }
 }

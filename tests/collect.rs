@@ -6,7 +6,7 @@ use std::process::Command;
 use chrono::{Datelike, Days, NaiveDate, Weekday};
 use git_koi::collect::{CollectionError, GraphqlClient, collect_account_snapshot};
 use git_koi::history::{
-    ContributionHistoryError, calculate_language_shares, summarize_contributions,
+    ContributionHistoryError, LanguageColor, calculate_language_shares, summarize_contributions,
 };
 use git_koi::koi::derive_koi_development;
 use git_koi::render::render_base_koi;
@@ -24,6 +24,13 @@ fn collected_snapshot_covers_every_page_and_day_and_renders() {
     assert_eq!(
         calculate_language_shares(&account_snapshot).unwrap(),
         BTreeMap::from([("Python".to_owned(), 0.5), ("Rust".to_owned(), 0.5)])
+    );
+    assert_eq!(
+        account_snapshot.language_colors,
+        Some(BTreeMap::from([
+            ("Python".to_owned(), Some(LanguageColor([0x35, 0x72, 0xa5]))),
+            ("Rust".to_owned(), Some(LanguageColor([0xde, 0xa5, 0x84]))),
+        ]))
     );
     let contribution_history = account_snapshot.contribution_history.as_ref().unwrap();
     assert_eq!(contribution_history.days[0].date, date("2024-11-20"));
@@ -114,6 +121,16 @@ fn missing_repository_fields_fail_instead_of_guessing() {
         Err(CollectionError::UnexpectedResponse(detail)) => assert!(detail.contains("isFork")),
         other => panic!("expected an unexpected-response error, got {other:?}"),
     }
+}
+
+#[test]
+fn two_colors_for_one_language_fail() {
+    let mut github = RecordedGitHub::new();
+    github.owned_pages[1]["nodes"][0]["primaryLanguage"]["color"] = json!("#000000");
+    assert_eq!(
+        collect_account_snapshot(&github, LOGIN, date("2026-01-03")),
+        Err(CollectionError::ConflictingLanguageColor("Rust".to_owned()))
+    );
 }
 
 #[test]
@@ -248,11 +265,16 @@ impl GraphqlClient for RecordedGitHub {
 }
 
 fn repository_node(repository_id: u64, is_fork: bool, language: Option<&str>) -> Value {
+    let language_color = |name: &str| match name {
+        "Rust" => "#dea584",
+        "Python" => "#3572A5",
+        _ => panic!("no recorded color for {name}"),
+    };
     json!({
         "databaseId": repository_id,
         "visibility": "PUBLIC",
         "isFork": is_fork,
-        "primaryLanguage": language.map(|name| json!({ "name": name })),
+        "primaryLanguage": language.map(|name| json!({ "name": name, "color": language_color(name) })),
     })
 }
 

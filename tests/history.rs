@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use chrono::{Datelike, Days, NaiveDate};
 use git_koi::history::{
     AccountSnapshot, ConflictingRepository, ContributionDay, ContributionHistory,
-    ContributionHistoryError, RepositoryVisibility, calculate_language_shares,
+    ContributionHistoryError, LanguageColor, RepositoryVisibility, calculate_language_shares,
     summarize_contributions,
 };
 
@@ -253,6 +253,28 @@ fn supported_snapshot_versions_preserve_observations_and_language_shares() {
 }
 
 #[test]
+fn colored_snapshots_round_trip_with_absent_colors_kept_distinct() {
+    let mut account_snapshot: AccountSnapshot =
+        serde_json::from_str(ACCOUNT_WITH_HISTORY_JSON).unwrap();
+    assert_eq!(
+        serde_json::to_value(&account_snapshot).unwrap(),
+        serde_json::from_str::<serde_json::Value>(ACCOUNT_WITH_HISTORY_JSON).unwrap()
+    );
+    account_snapshot
+        .language_colors
+        .as_mut()
+        .unwrap()
+        .insert("Text".to_owned(), None);
+    let snapshot_bytes = serde_json::to_vec(&account_snapshot).unwrap();
+    let restored_snapshot: AccountSnapshot = serde_json::from_slice(&snapshot_bytes).unwrap();
+    assert_eq!(restored_snapshot, account_snapshot);
+    assert_eq!(
+        restored_snapshot.language_colors.unwrap()["Rust"],
+        Some(LanguageColor([0xde, 0xa5, 0x84]))
+    );
+}
+
+#[test]
 fn unavailable_history_differs_from_confirmed_empty_history() {
     let mut account_snapshot: AccountSnapshot = serde_json::from_str(ACCOUNT_JSON).unwrap();
     assert_eq!(
@@ -334,14 +356,29 @@ fn snapshot_versions_enforce_their_own_history_fields() {
         .remove("contribution_history");
     let mut dated_with_null_history = snapshot_document.clone();
     dated_with_null_history["contribution_history"] = serde_json::Value::Null;
-    let mut history_with_unknown_field = snapshot_document;
+    let mut history_with_unknown_field = snapshot_document.clone();
     history_with_unknown_field["contribution_history"]["unexpected_field"] =
         serde_json::json!(true);
+    let mut dated_with_colors = snapshot_document.clone();
+    dated_with_colors["schema_version"] = serde_json::json!(2);
+    let mut colored_without_colors = snapshot_document.clone();
+    colored_without_colors
+        .as_object_mut()
+        .unwrap()
+        .remove("language_colors");
+    let mut colored_with_null_colors = snapshot_document.clone();
+    colored_with_null_colors["language_colors"] = serde_json::Value::Null;
+    let mut malformed_color = snapshot_document;
+    malformed_color["language_colors"]["Rust"] = serde_json::json!("dea584");
     for incompatible_document in [
         legacy_with_history,
         dated_without_history,
         dated_with_null_history,
         history_with_unknown_field,
+        dated_with_colors,
+        colored_without_colors,
+        colored_with_null_colors,
+        malformed_color,
     ] {
         assert!(serde_json::from_value::<AccountSnapshot>(incompatible_document).is_err());
     }
