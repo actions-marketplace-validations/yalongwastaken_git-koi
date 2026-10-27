@@ -5,7 +5,7 @@ use git_koi::history::{
     AccountSnapshot, ConflictingRepository, ContributionDay, ContributionHistory,
     ContributionHistoryError, LanguageColor,
 };
-use git_koi::koi::{KoiDevelopmentError, RecentStreak, derive_koi_development};
+use git_koi::koi::{KoiDevelopmentError, RecentActivity, RecentStreak, derive_koi_development};
 
 #[test]
 fn identity_survives_growth_and_language_changes_but_distinguishes_accounts() {
@@ -174,10 +174,10 @@ fn empty_observations_produce_no_streaks_but_unavailable_history_fails() {
         .unwrap()
         .days
         .clear();
-    assert_eq!(
-        derive_koi_development(&account_snapshot).unwrap(),
-        inactive_development
-    );
+    // Observed quiet days are recent activity; an empty history has none to report.
+    let empty_development = derive_koi_development(&account_snapshot).unwrap();
+    assert_eq!(empty_development.total_contributions, 0);
+    assert_eq!(empty_development.streaks, inactive_development.streaks);
     account_snapshot.contribution_history = None;
     assert_eq!(
         derive_koi_development(&account_snapshot),
@@ -245,6 +245,57 @@ fn snapshots_without_language_colors_ask_for_a_new_collection() {
             .unwrap_err()
             .to_string()
             .contains("git-koi collect")
+    );
+}
+
+#[test]
+fn recent_activity_counts_quiet_days_the_last_week_and_complete_weeks() {
+    let activity_for = |daily_counts: &[u32]| {
+        derive_koi_development(&build_snapshot_with_counts(daily_counts))
+            .unwrap()
+            .recent_activity
+    };
+    // Two full weeks, then a quiet Monday and Tuesday.
+    assert_eq!(
+        activity_for(&[vec![1; 7], vec![0, 0, 0, 0, 0, 0, 2], vec![0, 0]].concat()),
+        RecentActivity {
+            quiet_day_count: 2,
+            recent_contributions: 2,
+            complete_week_contributions: vec![7, 2],
+        }
+    );
+    // Active on the observation date, partway through the first week.
+    assert_eq!(
+        activity_for(&[0, 0, 3]),
+        RecentActivity {
+            quiet_day_count: 0,
+            recent_contributions: 3,
+            complete_week_contributions: Vec::new(),
+        }
+    );
+    // Never active: every observed day is quiet.
+    assert_eq!(activity_for(&[0; 5]).quiet_day_count, 5);
+    // Observed on a Sunday, the full observation week is still in progress.
+    assert_eq!(
+        activity_for(&[1; 7]).complete_week_contributions,
+        Vec::<u64>::new()
+    );
+    let mut empty_snapshot = build_snapshot_with_counts(&[1]);
+    empty_snapshot
+        .contribution_history
+        .as_mut()
+        .unwrap()
+        .days
+        .clear();
+    assert_eq!(
+        derive_koi_development(&empty_snapshot)
+            .unwrap()
+            .recent_activity,
+        RecentActivity {
+            quiet_day_count: 0,
+            recent_contributions: 0,
+            complete_week_contributions: Vec::new(),
+        }
     );
 }
 

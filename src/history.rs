@@ -91,6 +91,9 @@ pub struct ContributionSummary {
     pub observed_on: NaiveDate,
     pub total_contributions: u64,
     pub weeks: Vec<ContributionWeek>,
+    /// One count per date, in order, from the first observation through the
+    /// observation date, with identical duplicates merged.
+    pub daily_counts: BTreeMap<NaiveDate, u32>,
 }
 
 /// Participation in one Monday-Sunday week, including explicitly inactive weeks.
@@ -192,7 +195,7 @@ pub fn summarize_contributions(
     let daily_counts = normalize_contribution_days(contribution_history)?;
     let mut weekly_contributions = BTreeMap::new();
     let mut total_contributions = 0;
-    for (contribution_date, contribution_count) in daily_counts {
+    for (&contribution_date, &contribution_count) in &daily_counts {
         total_contributions += u64::from(contribution_count);
         let iso_week = contribution_date.iso_week();
         let contribution_week = weekly_contributions
@@ -209,6 +212,7 @@ pub fn summarize_contributions(
         observed_on: contribution_history.observed_on,
         total_contributions,
         weeks: weekly_contributions.into_values().collect(),
+        daily_counts,
     })
 }
 

@@ -118,9 +118,10 @@ cargo test --offline --locked --test history
 
 `koi::derive_koi_development` turns a dated snapshot into reproducible
 appearance inputs: an account identity seed, language shares with their GitHub
-colors, contribution totals, and weekly streak profiles. The numeric account ID
-supplies the seed, so changes to activity or language composition do not replace
-the fish's identity.
+colors, contribution totals, weekly streak profiles, and recent activity: quiet
+days, the last seven days' contributions, and complete weekly totals. The
+numeric account ID supplies the seed, so changes to activity or language
+composition do not replace the fish's identity.
 
 The longest streak retains its weekly participation until a strictly longer
 streak replaces it. The current streak remains independent, including when an
@@ -219,6 +220,25 @@ whiskers sway. `motion::calculate_cruise_pose` returns each frame's pose, and
 `render::render_koi` still draws the fixed pose for static exports. Frame timing
 lives in `src/motion.rs`, and the lap geometry in `src/render.rs`. Exercise the
 poses with `cargo test --offline --locked --test motion`.
+
+### Behavior
+
+`behavior::select_behavior` chooses the day's movement from the development's
+recent activity. The first matching rule wins:
+
+| Behavior  | When                                                                                |
+| --------- | ----------------------------------------------------------------------------------- |
+| Deep rest | No contributions for 60 or more days                                                |
+| Rest      | No contributions for 14 or more days                                                |
+| Dart      | The total crossed 1,000, 5,000, 10,000, 25,000, 50,000, or 100,000 in the last week |
+| Dart      | The last seven days stand out: at most one in ten complete weeks matches them       |
+| Cruise    | Everything else                                                                     |
+
+Quiet days run up to the observation date. A standout week needs at least ten
+complete Monday-Sunday weeks of history, so a steady account cruises. Behavior
+changes only movement; growth, colors, and marks stay as they are. The rules and
+thresholds live in `src/behavior.rs`. Only cruise is drawn so far. Exercise the
+rules with `cargo test --offline --locked --test behavior`.
 
 ### Koi Library
 
