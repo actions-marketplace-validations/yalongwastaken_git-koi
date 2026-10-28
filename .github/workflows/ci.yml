@@ -1,0 +1,50 @@
+name: CI
+
+# The gates every change passes. The ruleset on main requires both jobs.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal -c rustfmt,clippy
+      - name: Check formatting
+        run: cargo +stable fmt --all -- --check
+      - name: Lint
+        run: cargo +stable clippy --locked --all-targets -- -D warnings
+      - name: Test
+        run: cargo +stable test --locked
+      - name: Build
+        run: cargo +stable build --release --locked
+      - name: Document
+        run: cargo +stable doc --locked --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Check documentation and configuration formatting
+        run: npx prettier@3.9.10 --check .
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read the minimum supported Rust version
+        run: |
+          rust_version=$(grep -m1 '^rust-version' Cargo.toml | cut -d'"' -f2)
+          echo "RUST_VERSION=$rust_version" >> "$GITHUB_ENV"
+      - name: Install it
+        run: rustup toolchain install "$RUST_VERSION" --profile minimal
+      - name: Check on it
+        run: cargo "+$RUST_VERSION" check --locked --all-targets
