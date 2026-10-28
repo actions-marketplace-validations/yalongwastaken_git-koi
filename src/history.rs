@@ -9,9 +9,11 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 /// GitHub observations supplied by the caller, readable and writable through Serde.
 ///
-/// The caller supplies the complete collection of owned and GitHub-recognized
-/// contributed repositories. Parsing verifies the format, not collection completeness.
-/// Older snapshots remain usable for language shares but have no contribution history.
+/// The caller supplies the owned and GitHub-recognized contributed repositories; only
+/// public, non-fork ones affect language shares, so a public-only collection is enough.
+/// Parsing verifies the format, not collection completeness.
+/// Older snapshots remain usable for language shares but have no contribution history
+/// or language colors. Language colors require contribution history (version 3).
 /// Serialization selects the format from the available observations. Unknown fields,
 /// unsupported versions, and missing fields within a supported format are rejected.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -20,6 +22,48 @@ pub struct AccountSnapshot {
     pub account_id: u64,
     pub repositories: Vec<RepositoryObservation>,
     pub contribution_history: Option<ContributionHistory>,
+    /// GitHub's color for each observed language name; `None` means GitHub has no color.
+    pub language_colors: Option<BTreeMap<String, Option<LanguageColor>>>,
+}
+
+/// A GitHub language color, written as `#rrggbb`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LanguageColor(pub [u8; 3]);
+
+impl TryFrom<&str> for LanguageColor {
+    type Error = String;
+
+    fn try_from(color_text: &str) -> Result<Self, Self::Error> {
+        let hex_digits = color_text
+            .strip_prefix('#')
+            .filter(|hex_digits| {
+                hex_digits.len() == 6 && hex_digits.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+            .ok_or_else(|| format!("language color {color_text} is not #rrggbb"))?;
+        let channel = |start: usize| {
+            u8::from_str_radix(&hex_digits[start..start + 2], 16).expect("validated hex digits")
+        };
+        Ok(Self([channel(0), channel(2), channel(4)]))
+    }
+}
+
+impl Serialize for LanguageColor {
+    fn serialize<ColorSerializer: serde::Serializer>(
+        &self,
+        color_serializer: ColorSerializer,
+    ) -> Result<ColorSerializer::Ok, ColorSerializer::Error> {
+        let [red, green, blue] = self.0;
+        color_serializer.serialize_str(&format!("#{red:02x}{green:02x}{blue:02x}"))
+    }
+}
+
+impl<'de> Deserialize<'de> for LanguageColor {
+    fn deserialize<ColorDeserializer: Deserializer<'de>>(
+        color_deserializer: ColorDeserializer,
+    ) -> Result<Self, ColorDeserializer::Error> {
+        let color_text = String::deserialize(color_deserializer)?;
+        Self::try_from(color_text.as_str()).map_err(serde::de::Error::custom)
+    }
 }
 
 /// Daily observations through an explicit date, without consulting the system clock.
@@ -275,26 +319,43 @@ struct SnapshotDocument {
         skip_serializing_if = "Option::is_none"
     )]
     contribution_history: Option<ContributionHistory>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_colors",
+        skip_serializing_if = "Option::is_none"
+    )]
+    language_colors: Option<BTreeMap<String, Option<LanguageColor>>>,
 }
 
 impl TryFrom<SnapshotDocument> for AccountSnapshot {
     type Error = String;
 
     fn try_from(snapshot_document: SnapshotDocument) -> Result<Self, Self::Error> {
-        match (
-            snapshot_document.schema_version,
-            &snapshot_document.contribution_history,
-        ) {
-            (SnapshotVersion::V1, Some(_)) => {
+        let has_history = snapshot_document.contribution_history.is_some();
+        let has_colors = snapshot_document.language_colors.is_some();
+        match snapshot_document.schema_version {
+            SnapshotVersion::V1 if has_history => {
                 return Err(
                     "contribution_history is not a field in snapshot version 1; \
                      use version 2 for dated contributions"
                         .to_owned(),
                 );
             }
-            (SnapshotVersion::V2, None) => {
-                return Err("missing contribution_history in snapshot version 2; \
+            SnapshotVersion::V2 | SnapshotVersion::V3 if !has_history => {
+                return Err(
+                    "missing contribution_history in snapshot versions 2 and 3; \
                      supply dated observations"
+                        .to_owned(),
+                );
+            }
+            SnapshotVersion::V1 | SnapshotVersion::V2 if has_colors => {
+                return Err("language_colors is not a field before snapshot version 3; \
+                     use version 3 for language colors"
+                    .to_owned());
+            }
+            SnapshotVersion::V3 if !has_colors => {
+                return Err("missing language_colors in snapshot version 3; \
+                     collect the snapshot again"
                     .to_owned());
             }
             _ => {}
@@ -303,13 +364,16 @@ impl TryFrom<SnapshotDocument> for AccountSnapshot {
             account_id: snapshot_document.account_id,
             repositories: snapshot_document.repositories,
             contribution_history: snapshot_document.contribution_history,
+            language_colors: snapshot_document.language_colors,
         })
     }
 }
 
 impl From<AccountSnapshot> for SnapshotDocument {
     fn from(account_snapshot: AccountSnapshot) -> Self {
-        let schema_version = if account_snapshot.contribution_history.is_some() {
+        let schema_version = if account_snapshot.language_colors.is_some() {
+            SnapshotVersion::V3
+        } else if account_snapshot.contribution_history.is_some() {
             SnapshotVersion::V2
         } else {
             SnapshotVersion::V1
@@ -319,6 +383,7 @@ impl From<AccountSnapshot> for SnapshotDocument {
             account_id: account_snapshot.account_id,
             repositories: account_snapshot.repositories,
             contribution_history: account_snapshot.contribution_history,
+            language_colors: account_snapshot.language_colors,
         }
     }
 }
@@ -333,11 +398,22 @@ where
     ContributionHistory::deserialize(history_deserializer).map(Some)
 }
 
+// An explicit colors field must be an object; absence is reserved for older snapshots.
+fn deserialize_present_colors<'de, ColorsDeserializer>(
+    colors_deserializer: ColorsDeserializer,
+) -> Result<Option<BTreeMap<String, Option<LanguageColor>>>, ColorsDeserializer::Error>
+where
+    ColorsDeserializer: Deserializer<'de>,
+{
+    BTreeMap::deserialize(colors_deserializer).map(Some)
+}
+
 #[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(try_from = "u32", into = "u32")]
 enum SnapshotVersion {
     V1 = 1,
     V2 = 2,
+    V3 = 3,
 }
 
 impl TryFrom<u32> for SnapshotVersion {
@@ -348,6 +424,8 @@ impl TryFrom<u32> for SnapshotVersion {
             Ok(Self::V1)
         } else if schema_version == Self::V2 as u32 {
             Ok(Self::V2)
+        } else if schema_version == Self::V3 as u32 {
+            Ok(Self::V3)
         } else {
             Err(format!(
                 "unsupported snapshot schema version {schema_version}; use a reader supporting that version"

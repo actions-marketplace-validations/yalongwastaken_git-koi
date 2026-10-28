@@ -28,6 +28,7 @@ GitHub contribution history and repository language shares.
   [Cargo.toml](Cargo.toml).
 - A native linker for your target platform.
 - Node.js and npm for documentation formatting with Prettier 3.9.10.
+- The [GitHub CLI](https://cli.github.com), authenticated, for collection.
 
 ### Build and Run
 
@@ -36,11 +37,38 @@ Run from the repository root:
 ```sh
 cargo fetch --locked
 cargo build --release --offline --locked
-./target/release/git-koi
+./target/release/git-koi --help
 ```
 
-The executable is a scaffold: it exits successfully without output. It does not
-generate koi or provide command-line options yet.
+### Collection
+
+`git-koi collect LOGIN` gathers an account snapshot through `gh api` and writes
+it as JSON to standard output. With `--output FILE`, it replaces the file only
+after collection succeeds, so a failed run keeps the previous snapshot.
+
+```sh
+./target/release/git-koi collect octocat --output snapshot.json
+```
+
+The snapshot holds the account's numeric ID, its public repositories, the public
+repositories GitHub counts it as contributing to, GitHub's color for each of
+their primary languages, and its daily contribution counts from account creation
+through the latest date GitHub reports. Only public data is read, so a GitHub
+Actions workflow can collect with its built-in token:
+
+```yaml
+env:
+  GH_TOKEN: ${{ github.token }}
+```
+
+The calendar is requested a year at a time and its dates are in UTC; the
+observation date is the latest date GitHub reports. Before writing, the snapshot
+is checked against the history rules below, so gaps, conflicting days, or a
+calendar that starts after the account was created fail instead of producing a
+partial snapshot. Success prints only the snapshot. Collection errors go to
+standard error and exit 1; invalid usage exits 2. See
+[the collection contract](src/collect.rs) and exercise it with
+`cargo test --offline --locked --test collect`.
 
 ### Account Snapshots
 
@@ -73,9 +101,11 @@ history must contain every date from its first observation through its
 observation date, including days with zero contributions. Gaps, conflicting
 counts, and later dates fail instead of changing the apparent activity.
 
-The writer selects the snapshot version from the available observations. Older
-snapshots remain readable for language shares; contribution summaries report
-missing history rather than treating it as zero. See
+Collected snapshots also record GitHub's color for each language as `#rrggbb`,
+or `null` when GitHub assigns none. The writer selects the snapshot version from
+the available observations. Older snapshots remain readable for language shares;
+contribution summaries report missing history rather than treating it as zero,
+and koi development reports missing colors. See
 [the dated account fixture](tests/fixtures/account-with-history.json).
 
 Exercise the library through its public interface:
@@ -87,16 +117,18 @@ cargo test --offline --locked --test history
 ### Koi Development
 
 `koi::derive_koi_development` turns a dated snapshot into reproducible
-appearance inputs: an account identity seed, language shares, contribution
-totals, and weekly streak profiles. The numeric account ID supplies the seed, so
-changes to activity or language composition do not replace the fish's identity.
+appearance inputs: an account identity seed, language shares with their GitHub
+colors, contribution totals, and weekly streak profiles. The numeric account ID
+supplies the seed, so changes to activity or language composition do not replace
+the fish's identity.
 
 The longest streak retains its weekly participation until a strictly longer
 streak replaces it. The current streak remains independent, including when an
 account returns below its record. An unfinished observation week cannot break a
 streak. Once an inactive week completes, the latest streak and its end date
 remain available for temporary markings to fade; later inactivity does not move
-that date. Missing history fails rather than creating an undeveloped fish.
+that date. Missing history fails rather than creating an undeveloped fish, and a
+snapshot without language colors fails with a request to collect it again.
 
 The model contains measurements, not pixels, growth thresholds, or fade
 durations. See [the development contract](src/koi.rs) and exercise its public

@@ -8,7 +8,7 @@ use chrono::{Datelike, NaiveDate, Weekday};
 
 use crate::history::{
     AccountSnapshot, ConflictingRepository, ContributionHistoryError, ContributionSummary,
-    ContributionWeek, calculate_language_shares, summarize_contributions,
+    ContributionWeek, LanguageColor, calculate_language_shares, summarize_contributions,
 };
 
 /// Derived inputs for appearance; source observations remain in the account snapshot.
@@ -17,6 +17,8 @@ pub struct KoiDevelopment {
     /// The stable numeric GitHub account ID.
     pub identity_seed: u64,
     pub language_shares: BTreeMap<String, f64>,
+    /// GitHub's color for each language in `language_shares`; `None` means it has no color.
+    pub language_colors: BTreeMap<String, Option<LanguageColor>>,
     /// Unweighted contributions available to the renderer's growth curve.
     pub total_contributions: u64,
     pub observed_on: NaiveDate,
@@ -51,8 +53,10 @@ pub enum RecentStreak {
 ///
 /// History owns input validation and language eligibility. Its errors propagate;
 /// unavailable history never becomes an undeveloped koi. Confirmed empty history
-/// produces zero contributions and no streaks. Inputs are borrowed without mutation;
-/// this operation performs no I/O and reads no clock. It assigns no visual thresholds.
+/// produces zero contributions and no streaks. Every counted language needs a
+/// recorded color, so a snapshot without colors fails instead of producing an
+/// uncolored koi. Inputs are borrowed without mutation; this operation performs
+/// no I/O and reads no clock. It assigns no visual thresholds.
 pub fn derive_koi_development(
     account_snapshot: &AccountSnapshot,
 ) -> Result<KoiDevelopment, KoiDevelopmentError> {
@@ -60,9 +64,23 @@ pub fn derive_koi_development(
         .map_err(KoiDevelopmentError::ContributionHistory)?;
     let language_shares =
         calculate_language_shares(account_snapshot).map_err(KoiDevelopmentError::Repositories)?;
+    let recorded_colors = account_snapshot
+        .language_colors
+        .as_ref()
+        .ok_or(KoiDevelopmentError::MissingLanguageColors)?;
+    let language_colors = language_shares
+        .keys()
+        .map(|language_name| {
+            recorded_colors
+                .get(language_name)
+                .map(|language_color| (language_name.clone(), *language_color))
+                .ok_or_else(|| KoiDevelopmentError::MissingLanguageColor(language_name.clone()))
+        })
+        .collect::<Result<_, _>>()?;
     Ok(KoiDevelopment {
         identity_seed: account_snapshot.account_id,
         language_shares,
+        language_colors,
         total_contributions: contribution_summary.total_contributions,
         observed_on: contribution_summary.observed_on,
         streaks: calculate_streak_development(&contribution_summary),
@@ -88,6 +106,8 @@ pub fn calculate_growth_fraction(total_contributions: u64) -> f64 {
 pub enum KoiDevelopmentError {
     ContributionHistory(ContributionHistoryError),
     Repositories(ConflictingRepository),
+    MissingLanguageColors,
+    MissingLanguageColor(String),
 }
 
 impl fmt::Display for KoiDevelopmentError {
@@ -95,6 +115,14 @@ impl fmt::Display for KoiDevelopmentError {
         match self {
             Self::ContributionHistory(history_error) => write!(output_formatter, "{history_error}"),
             Self::Repositories(repository_error) => write!(output_formatter, "{repository_error}"),
+            Self::MissingLanguageColors => write!(
+                output_formatter,
+                "the snapshot has no language colors; collect it again with `git-koi collect`"
+            ),
+            Self::MissingLanguageColor(language_name) => write!(
+                output_formatter,
+                "the snapshot has no color for {language_name}; collect it again with `git-koi collect`"
+            ),
         }
     }
 }
@@ -104,6 +132,7 @@ impl Error for KoiDevelopmentError {
         match self {
             Self::ContributionHistory(history_error) => Some(history_error),
             Self::Repositories(repository_error) => Some(repository_error),
+            Self::MissingLanguageColors | Self::MissingLanguageColor(_) => None,
         }
     }
 }
