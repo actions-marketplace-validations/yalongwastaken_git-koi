@@ -35,11 +35,11 @@ fn collected_snapshot_covers_every_page_and_day_and_renders() {
     );
     let contribution_history = account_snapshot.contribution_history.as_ref().unwrap();
     assert_eq!(contribution_history.days[0].date, date("2024-11-20"));
-    assert_eq!(contribution_history.observed_on, date("2026-01-03"));
+    assert_eq!(contribution_history.observed_on, date("2026-01-02"));
     let contribution_summary = summarize_contributions(&account_snapshot).unwrap();
     let expected_total: u64 = date("2024-11-20")
         .iter_days()
-        .take_while(|day| *day <= date("2026-01-03"))
+        .take_while(|day| *day <= date("2026-01-02"))
         .map(|day| u64::from(synthetic_count(day)))
         .sum();
     assert_eq!(contribution_summary.total_contributions, expected_total);
@@ -78,10 +78,46 @@ fn calendar_is_requested_one_year_at_a_time_from_account_creation() {
             ),
             (
                 "2025-11-20T00:00:00Z".to_owned(),
-                "2026-01-03T23:59:59Z".to_owned()
+                "2026-01-02T23:59:59Z".to_owned()
             ),
         ]
     );
+}
+
+#[test]
+fn the_day_in_progress_is_left_out_even_when_github_reports_it() {
+    let github = RecordedGitHub {
+        calendar: |from, _| Ok(calendar_response(from, date("2026-01-03"), |_| true)),
+        ..RecordedGitHub::new()
+    };
+    let account_snapshot = collect_account_snapshot(&github, LOGIN, date("2026-01-03")).unwrap();
+
+    let contribution_history = account_snapshot.contribution_history.unwrap();
+    assert_eq!(contribution_history.observed_on, date("2026-01-02"));
+    assert_eq!(
+        contribution_history.days.last().unwrap().date,
+        date("2026-01-02")
+    );
+}
+
+#[test]
+fn an_account_created_today_has_an_empty_history_through_yesterday() {
+    let github = RecordedGitHub {
+        account: json!({ "databaseId": 4242, "createdAt": "2026-01-03T08:00:00Z" }),
+        ..RecordedGitHub::new()
+    };
+    let account_snapshot = collect_account_snapshot(&github, LOGIN, date("2026-01-03")).unwrap();
+
+    assert!(
+        github
+            .requests
+            .borrow()
+            .iter()
+            .all(|variables| !variables.contains_key("from"))
+    );
+    let contribution_history = account_snapshot.contribution_history.unwrap();
+    assert_eq!(contribution_history.observed_on, date("2026-01-02"));
+    assert!(contribution_history.days.is_empty());
 }
 
 #[test]

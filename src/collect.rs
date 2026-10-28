@@ -69,7 +69,10 @@ const CALENDAR_QUERY: &str = "query($login: String!, $from: DateTime!, $to: Date
 /// latest date GitHub reports.
 ///
 /// GitHub limits each calendar request to a year, so the calendar is requested a year at
-/// a time. `today` only bounds those requests; the observation date comes from GitHub.
+/// a time. `today` is the current UTC date and its day is still in progress, so the
+/// requests end the day before and a run just after midnight observes the day that just
+/// ended. Within that bound the observation date comes from GitHub. An account created
+/// today has no complete day yet and gets an empty history observed through yesterday.
 /// The snapshot is checked against the history rules before it is returned, so a gap,
 /// a conflict, or a calendar that starts after the account was created fails instead of
 /// producing a partial snapshot.
@@ -205,22 +208,31 @@ fn read_repository(
     })
 }
 
-/// Request the calendar a year at a time, keeping only days inside each requested window
-/// and on or after the account's creation date.
+/// Request the calendar a year at a time through the last complete day, keeping only days
+/// inside each requested window and on or after the account's creation date.
 fn collect_contribution_history(
     github: &impl GraphqlClient,
     login: &str,
     created_on: NaiveDate,
     today: NaiveDate,
 ) -> Result<ContributionHistory, CollectionError> {
+    let last_complete_day = today
+        .pred_opt()
+        .expect("calendar windows stay within supported dates");
+    if created_on > last_complete_day {
+        return Ok(ContributionHistory {
+            observed_on: last_complete_day,
+            days: Vec::new(),
+        });
+    }
     let mut daily_counts = BTreeMap::new();
     let mut window_start = created_on;
-    while window_start <= today {
+    while window_start <= last_complete_day {
         let window_end = window_start
             .checked_add_months(Months::new(12))
             .and_then(|next_year| next_year.pred_opt())
             .expect("calendar windows stay within supported dates")
-            .min(today);
+            .min(last_complete_day);
         let from = format!("{window_start}T00:00:00Z");
         let to = format!("{window_end}T23:59:59Z");
         let calendar_data = github.run_query(

@@ -10,7 +10,8 @@ use git_koi::collect::{GhCli, collect_account_snapshot};
 
 const USAGE: &str = "Usage: git-koi collect LOGIN [--output FILE]
 Collect LOGIN's public GitHub snapshot as JSON through `gh api`: public owned and
-contributed repositories, and daily contributions since the account was created.
+contributed repositories, and daily contributions from the account's creation
+through yesterday (UTC), the last complete day.
 Writes to standard output, or replaces FILE only after collection succeeds.
 Requires an authenticated GitHub CLI; in GitHub Actions, set GH_TOKEN to github.token.
 Errors go to stderr and exit 1; invalid usage exits 2.

@@ -62,11 +62,13 @@ env:
 ```
 
 The calendar is requested a year at a time and its dates are in UTC; the
-observation date is the latest date GitHub reports. Before writing, the snapshot
-is checked against the history rules below, so gaps, conflicting days, or a
-calendar that starts after the account was created fail instead of producing a
-partial snapshot. Success prints only the snapshot. Collection errors go to
-standard error and exit 1; invalid usage exits 2. See
+observation date is the latest date GitHub reports up to the last complete UTC
+day, so a run just after midnight observes the day that just ended. An account
+created on the day of the run has no complete day yet and gets an empty history.
+Before writing, the snapshot is checked against the history rules below, so
+gaps, conflicting days, or a calendar that starts after the account was created
+fail instead of producing a partial snapshot. Success prints only the snapshot.
+Collection errors go to standard error and exit 1; invalid usage exits 2. See
 [the collection contract](src/collect.rs) and exercise it with
 `cargo test --offline --locked --test collect`.
 
