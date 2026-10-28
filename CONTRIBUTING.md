@@ -61,6 +61,26 @@ cargo run --locked --example generate-library -- library
 When a change alters how the koi looks, copy `library/bodies-light.png` and
 `library/bodies-dark.png` into `docs/` so the README's sheet matches the code.
 
+## Releasing
+
+A release is a version tag, and the release workflow does the rest.
+
+1. Set `version` in [Cargo.toml](Cargo.toml) and run `cargo build --locked` so
+   `Cargo.lock` follows. Move the Unreleased entries in
+   [CHANGELOG.md](CHANGELOG.md) under a heading for the version with the day's
+   date, and keep the link references at the bottom current.
+2. Merge that through a pull request, then tag the merge commit `vX.Y.Z` and
+   push the tag.
+
+The workflow checks the tag against the manifest and the changelog, builds the
+binaries for Linux, macOS, and Windows, publishes the GitHub Release with the
+changelog section as its notes, and runs the Action against that release. Only
+once that passes does it move the major tag such as `v1`, so the Action follows
+the release, and publish the crate through crates.io trusted publishing, the two
+steps that cannot be undone. Every step skips what already exists, so rerunning
+a failed release is safe. The Action downloads the release whose version its own
+`Cargo.toml` names, so a release tag is the only thing it can be referenced at.
+
 ## Issues and Security
 
 Open bugs and feature requests through the issue forms. Report vulnerabilities
