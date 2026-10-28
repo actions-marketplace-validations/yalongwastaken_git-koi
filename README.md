@@ -198,11 +198,21 @@ at the same display size. The SVG uses native pixel coordinates and groups
 neighboring equal pixels into row rectangles. Canvas dimensions live in
 `src/render.rs`; static export dimensions derive from them in `src/output.rs`.
 
+`output::encode_gif` turns a behavior's loop into an animated GIF at the same 2x
+size that repeats forever at `motion::FRAMES_PER_SECOND`. Frame delays run 7, 6,
+7 hundredths of a second, repeating, so a loop lasts exactly its frame count at
+that rate: eight seconds for 120 frames, six for 90. Each frame stores only the
+box around what is drawn, with an exact palette of its colors, and clears it
+before the next frame, which keeps a loop between a few hundred kilobytes and
+about a megabyte. Colors are never approximated: a frame with more than 255
+colors or a partly transparent pixel fails instead, and koi frames use about 30.
+
 Rendering and encoding are deterministic and leave file access and publication
 to the caller.
 
 Exercise the rendering and encoding boundary with
-`cargo test --offline --locked --test render`.
+`cargo test --offline --locked --test render`, and the GIF with
+`cargo test --offline --locked --test output`.
 
 ### Swimming
 

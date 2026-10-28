@@ -1,5 +1,11 @@
-//! Static image encoding; callers own destinations and publication.
+//! Image and animation encoding; callers own destinations and publication.
 
+use std::borrow::Cow;
+use std::collections::BTreeMap;
+use std::error::Error;
+use std::fmt;
+
+use crate::motion::FRAMES_PER_SECOND;
 use crate::render::{FRAME_HEIGHT_PIXELS, FRAME_WIDTH_PIXELS, KoiFrame};
 
 pub const STATIC_EXPORT_SCALE: u32 = 2;
@@ -58,4 +64,240 @@ pub fn encode_svg(koi_frame: &KoiFrame) -> String {
     }
     svg_document.push_str("</svg>\n");
     svg_document
+}
+
+/// One GIF palette holds 256 entries, and one of them marks transparent pixels.
+const GIF_COLOR_LIMIT: usize = 255;
+const GIF_TRANSPARENT_INDEX: u8 = 0;
+
+/// Encode a seamless loop as an animated GIF at the static export size, repeating each
+/// native pixel in both dimensions. The GIF repeats forever at `FRAMES_PER_SECOND`; each
+/// delay, in hundredths of a second, is the step in a rounded running total, so a loop
+/// lasts exactly its frame count divided by the frame rate. Each frame stores only the
+/// box around its drawn pixels, with an exact palette of its colors, and that box clears
+/// before the next frame. Colors are never approximated: a frame with more than 255
+/// colors or a partly transparent pixel fails instead. Identical frames produce
+/// identical bytes without I/O, timestamps, or input mutation.
+pub fn encode_gif(koi_frames: &[KoiFrame]) -> Result<Vec<u8>, GifEncodingError> {
+    if koi_frames.is_empty() {
+        return Err(GifEncodingError::NoFrames);
+    }
+    let mut gif_encoder = gif::Encoder::new(
+        Vec::new(),
+        STATIC_WIDTH_PIXELS as u16,
+        STATIC_HEIGHT_PIXELS as u16,
+        &[],
+    )?;
+    gif_encoder.set_repeat(gif::Repeat::Infinite)?;
+    for (frame_index, koi_frame) in koi_frames.iter().enumerate() {
+        let native_pixels = koi_frame.as_rgba_bytes().as_chunks::<4>().0;
+        let [box_left, box_top, box_width, box_height] = find_drawn_box(native_pixels);
+        let mut palette_indices: BTreeMap<[u8; 3], u8> = BTreeMap::new();
+        let mut palette_channels = vec![0; 3];
+        let mut native_indices = Vec::with_capacity((box_width * box_height) as usize);
+        for native_y in box_top..box_top + box_height {
+            for native_x in box_left..box_left + box_width {
+                let [red, green, blue, alpha] =
+                    native_pixels[(native_y * FRAME_WIDTH_PIXELS + native_x) as usize];
+                let palette_index = match alpha {
+                    0 => GIF_TRANSPARENT_INDEX,
+                    255 => match palette_indices.get(&[red, green, blue]) {
+                        Some(&palette_index) => palette_index,
+                        None if palette_indices.len() == GIF_COLOR_LIMIT => {
+                            return Err(GifEncodingError::TooManyColors { frame_index });
+                        }
+                        None => {
+                            let palette_index = palette_indices.len() as u8 + 1;
+                            palette_indices.insert([red, green, blue], palette_index);
+                            palette_channels.extend([red, green, blue]);
+                            palette_index
+                        }
+                    },
+                    _ => return Err(GifEncodingError::PartialTransparency { frame_index }),
+                };
+                native_indices.push(palette_index);
+            }
+        }
+        let mut export_indices = Vec::with_capacity(
+            native_indices.len() * (STATIC_EXPORT_SCALE * STATIC_EXPORT_SCALE) as usize,
+        );
+        for native_row in native_indices.chunks(box_width as usize) {
+            let export_row: Vec<u8> = native_row
+                .iter()
+                .flat_map(|&palette_index| [palette_index; STATIC_EXPORT_SCALE as usize])
+                .collect();
+            for _ in 0..STATIC_EXPORT_SCALE {
+                export_indices.extend_from_slice(&export_row);
+            }
+        }
+        gif_encoder.write_frame(&gif::Frame {
+            delay: calculate_elapsed_hundredths(frame_index + 1)
+                - calculate_elapsed_hundredths(frame_index),
+            dispose: gif::DisposalMethod::Background,
+            transparent: Some(GIF_TRANSPARENT_INDEX),
+            left: (box_left * STATIC_EXPORT_SCALE) as u16,
+            top: (box_top * STATIC_EXPORT_SCALE) as u16,
+            width: (box_width * STATIC_EXPORT_SCALE) as u16,
+            height: (box_height * STATIC_EXPORT_SCALE) as u16,
+            palette: Some(palette_channels),
+            buffer: Cow::Owned(export_indices),
+            ..gif::Frame::default()
+        })?;
+    }
+    Ok(gif_encoder.into_inner()?)
+}
+
+/// The native box `[left, top, width, height]` around a frame's drawn pixels; a frame
+/// with none keeps one transparent pixel, since a GIF frame cannot be empty.
+fn find_drawn_box(native_pixels: &[[u8; 4]]) -> [u32; 4] {
+    let mut drawn_edges: Option<[u32; 4]> = None;
+    for (pixel_index, pixel_channels) in native_pixels.iter().enumerate() {
+        if pixel_channels[3] == 0 {
+            continue;
+        }
+        let pixel_x = pixel_index as u32 % FRAME_WIDTH_PIXELS;
+        let pixel_y = pixel_index as u32 / FRAME_WIDTH_PIXELS;
+        let [left, top, right, bottom] =
+            drawn_edges.get_or_insert([pixel_x, pixel_y, pixel_x, pixel_y]);
+        *left = (*left).min(pixel_x);
+        *top = (*top).min(pixel_y);
+        *right = (*right).max(pixel_x);
+        *bottom = (*bottom).max(pixel_y);
+    }
+    drawn_edges.map_or([0, 0, 1, 1], |[left, top, right, bottom]| {
+        [left, top, right + 1 - left, bottom + 1 - top]
+    })
+}
+
+/// Hundredths of a second from the start of the loop to the given frame, rounded.
+fn calculate_elapsed_hundredths(frame_index: usize) -> u16 {
+    let frames_per_second = FRAMES_PER_SECOND as usize;
+    u16::try_from((frame_index * 200 + frames_per_second) / (2 * frames_per_second))
+        .expect("loops last under ten minutes")
+}
+
+#[derive(Debug)]
+pub enum GifEncodingError {
+    NoFrames,
+    TooManyColors {
+        frame_index: usize,
+    },
+    PartialTransparency {
+        frame_index: usize,
+    },
+    /// The GIF encoder failed; carries its own error.
+    Encoder(gif::EncodingError),
+}
+
+impl fmt::Display for GifEncodingError {
+    fn fmt(&self, output_formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoFrames => write!(output_formatter, "a GIF needs at least one frame"),
+            Self::TooManyColors { frame_index } => write!(
+                output_formatter,
+                "frame {frame_index} has more than {GIF_COLOR_LIMIT} colors, more than one GIF palette holds"
+            ),
+            Self::PartialTransparency { frame_index } => write!(
+                output_formatter,
+                "frame {frame_index} has partly transparent pixels, which a GIF cannot show"
+            ),
+            Self::Encoder(encoding_error) => {
+                write!(output_formatter, "GIF encoding failed: {encoding_error}")
+            }
+        }
+    }
+}
+
+impl Error for GifEncodingError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Encoder(encoding_error) => Some(encoding_error),
+            _ => None,
+        }
+    }
+}
+
+impl From<gif::EncodingError> for GifEncodingError {
+    fn from(encoding_error: gif::EncodingError) -> Self {
+        Self::Encoder(encoding_error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FRAME_PIXEL_COUNT: usize = (FRAME_WIDTH_PIXELS * FRAME_HEIGHT_PIXELS) as usize;
+
+    /// A frame with one opaque pixel of each given color, in reading order.
+    fn frame_with_colors(colors: impl IntoIterator<Item = [u8; 4]>) -> KoiFrame {
+        let mut rgba_pixels = vec![[0; 4]; FRAME_PIXEL_COUNT];
+        for (pixel_channels, color) in rgba_pixels.iter_mut().zip(colors) {
+            *pixel_channels = color;
+        }
+        KoiFrame::from_rgba_pixels(rgba_pixels)
+    }
+
+    fn distinct_colors(color_count: u32) -> impl Iterator<Item = [u8; 4]> {
+        (0..color_count).map(|color_index| [color_index as u8, (color_index >> 8) as u8, 7, 255])
+    }
+
+    fn total_hundredths(gif_bytes: &[u8]) -> u32 {
+        let mut gif_decoder = gif::DecodeOptions::new().read_info(gif_bytes).unwrap();
+        let mut total = 0;
+        while let Some(gif_frame) = gif_decoder.read_next_frame().unwrap() {
+            total += u32::from(gif_frame.delay);
+        }
+        total
+    }
+
+    #[test]
+    fn whole_loops_last_exactly_their_frames_at_fifteen_per_second() {
+        for (loop_frame_count, loop_hundredths) in [(120, 800), (90, 600)] {
+            let koi_frames: Vec<KoiFrame> = (0..loop_frame_count)
+                .map(|_| frame_with_colors(distinct_colors(1)))
+                .collect();
+            assert_eq!(
+                total_hundredths(&encode_gif(&koi_frames).unwrap()),
+                loop_hundredths
+            );
+        }
+    }
+
+    #[test]
+    fn a_frame_may_use_every_palette_color_but_no_more() {
+        assert!(encode_gif(&[frame_with_colors(distinct_colors(255))]).is_ok());
+        let crowded_frames = [
+            frame_with_colors(distinct_colors(1)),
+            frame_with_colors(distinct_colors(256)),
+        ];
+        assert!(matches!(
+            encode_gif(&crowded_frames),
+            Err(GifEncodingError::TooManyColors { frame_index: 1 })
+        ));
+    }
+
+    #[test]
+    fn partly_transparent_pixels_fail_instead_of_rounding() {
+        assert!(matches!(
+            encode_gif(&[frame_with_colors([[200, 100, 50, 128]])]),
+            Err(GifEncodingError::PartialTransparency { frame_index: 0 })
+        ));
+    }
+
+    #[test]
+    fn an_empty_frame_keeps_one_transparent_pixel() {
+        let gif_bytes = encode_gif(&[frame_with_colors([])]).unwrap();
+        let mut gif_decoder = gif::DecodeOptions::new()
+            .read_info(gif_bytes.as_slice())
+            .unwrap();
+        let gif_frame = gif_decoder.read_next_frame().unwrap().unwrap();
+        assert_eq!((gif_frame.width, gif_frame.height), (2, 2));
+        assert!(
+            gif_frame
+                .buffer
+                .chunks(4)
+                .all(|pixel_channels| pixel_channels[3] == 0)
+        );
+    }
 }
