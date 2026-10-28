@@ -205,6 +205,13 @@ fn render_pose(
             });
         }
     }
+    paint_mouth(
+        &mut rgba_pixels,
+        &body_spine,
+        koi_body,
+        pose_center,
+        swim_pose.mouth_opening,
+    );
     let fish_pixel_mask: Vec<bool> = rgba_pixels
         .iter()
         .map(|pixel_channels| pixel_channels[3] != 0)
@@ -237,6 +244,62 @@ fn calculate_mouth_position(body_spine: &[CurvePoint]) -> [f64; 2] {
         snout.position[axis_index]
             + forward_direction[axis_index] * snout.half_width_pixels * MOUTH_FORWARD_FRACTION
     })
+}
+
+/// The mouth: a circle at the front of the snout with a rim in the body's color around
+/// a dark opening, growing from under a pixel to half the snout's width as it opens.
+/// It is painted before the outline, so it is outlined like the koi, and a mostly
+/// closed mouth paints nothing.
+fn paint_mouth(
+    rgba_pixels: &mut [[u8; 4]],
+    body_spine: &[CurvePoint],
+    koi_body: KoiBody,
+    pose_center: [f64; 2],
+    mouth_opening: f64,
+) {
+    const VISIBLE_OPENING: f64 = 0.1;
+    const CLOSED_RADIUS_PIXELS: f64 = 0.8;
+    const OPEN_RADIUS_PER_SNOUT_RADIUS: f64 = 0.5;
+    const MIN_OPEN_RADIUS_PIXELS: f64 = 1.8;
+    const RIM_WIDTH_PIXELS: f64 = 0.9;
+    if mouth_opening <= VISIBLE_OPENING {
+        return;
+    }
+    let open_radius_pixels = (body_spine[0].half_width_pixels * OPEN_RADIUS_PER_SNOUT_RADIUS)
+        .max(MIN_OPEN_RADIUS_PIXELS);
+    let radius_pixels = interpolate(
+        CLOSED_RADIUS_PIXELS,
+        open_radius_pixels,
+        mouth_opening.min(1.0),
+    );
+    let mouth_world = calculate_mouth_position(body_spine);
+    let frame_sizes = [
+        f64::from(FRAME_WIDTH_PIXELS),
+        f64::from(FRAME_HEIGHT_PIXELS),
+    ];
+    let mouth = [0, 1].map(|axis_index| {
+        mouth_world[axis_index] - pose_center[axis_index] + frame_sizes[axis_index] / 2.0
+    });
+    let rim_color = koi_body.select_mouth_rim_color();
+    let frame_width = FRAME_WIDTH_PIXELS as usize;
+    let first_y = (mouth[1] - radius_pixels).floor().max(0.0) as usize;
+    let last_y = ((mouth[1] + radius_pixels).ceil() as usize).min(FRAME_HEIGHT_PIXELS as usize - 1);
+    let first_x = (mouth[0] - radius_pixels).floor().max(0.0) as usize;
+    let last_x = ((mouth[0] + radius_pixels).ceil() as usize).min(frame_width - 1);
+    for pixel_y in first_y..=last_y {
+        for pixel_x in first_x..=last_x {
+            let distance_pixels =
+                (pixel_x as f64 + 0.5 - mouth[0]).hypot(pixel_y as f64 + 0.5 - mouth[1]);
+            if distance_pixels <= radius_pixels {
+                rgba_pixels[pixel_y * frame_width + pixel_x] =
+                    if distance_pixels > radius_pixels - RIM_WIDTH_PIXELS {
+                        rim_color
+                    } else {
+                        OUTLINE_COLOR
+                    };
+            }
+        }
+    }
 }
 
 /// Surface feeding: ripple rings spreading from the mouth and food pellets drifting in
@@ -1158,4 +1221,58 @@ fn calculate_dither_threshold(pixel_position: [u32; 2]) -> f64 {
     let dither_y = pixel_position[1] as usize % DITHER_RANKS.len();
     (f64::from(DITHER_RANKS[dither_y][dither_x]) + 0.5)
         / (DITHER_RANKS.len() * DITHER_RANKS[0].len()) as f64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Paint only the mouth on an empty canvas centered on it.
+    fn paint_mouth_alone(koi_body: KoiBody, mouth_opening: f64) -> Vec<[u8; 4]> {
+        let koi_anatomy = calculate_anatomy(1_500);
+        let body_spine = build_spine(&koi_anatomy, &STILL_POSE);
+        let mut rgba_pixels = vec![[0; 4]; (FRAME_WIDTH_PIXELS * FRAME_HEIGHT_PIXELS) as usize];
+        let mouth_position = calculate_mouth_position(&body_spine);
+        paint_mouth(
+            &mut rgba_pixels,
+            &body_spine,
+            koi_body,
+            mouth_position,
+            mouth_opening,
+        );
+        rgba_pixels
+    }
+
+    fn center_pixel(rgba_pixels: &[[u8; 4]]) -> [u8; 4] {
+        rgba_pixels
+            [(FRAME_HEIGHT_PIXELS / 2 * FRAME_WIDTH_PIXELS + FRAME_WIDTH_PIXELS / 2) as usize]
+    }
+
+    fn count_painted(rgba_pixels: &[[u8; 4]]) -> usize {
+        rgba_pixels
+            .iter()
+            .filter(|pixel_channels| pixel_channels[3] != 0)
+            .count()
+    }
+
+    #[test]
+    fn the_mouth_opens_as_a_body_colored_rim_around_a_dark_opening() {
+        assert_eq!(count_painted(&paint_mouth_alone(KoiBody::White, 0.1)), 0);
+        for (koi_body, rim_color) in [
+            (KoiBody::White, [192, 203, 220, 255]),
+            (KoiBody::Black, [58, 68, 102, 255]),
+        ] {
+            let open_mouth = paint_mouth_alone(koi_body, 1.0);
+            assert_eq!(center_pixel(&open_mouth), OUTLINE_COLOR);
+            assert!(open_mouth.contains(&rim_color), "{koi_body:?}");
+            assert!(
+                open_mouth
+                    .iter()
+                    .all(|&pixel| pixel == [0; 4] || pixel == OUTLINE_COLOR || pixel == rim_color)
+            );
+        }
+        let half_open = count_painted(&paint_mouth_alone(KoiBody::White, 0.5));
+        let wide_open = count_painted(&paint_mouth_alone(KoiBody::White, 1.0));
+        assert!(0 < half_open && half_open < wide_open);
+    }
 }

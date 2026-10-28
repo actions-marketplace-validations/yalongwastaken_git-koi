@@ -223,12 +223,15 @@ dithered share of it drops out, more with depth.
 A wave travels from head to tail, growing toward the tail. The tail lobes bend
 behind it, slightly out of step, and the tail fan opens on each stroke. The side
 fins scull and flare, with their tips trailing their roots; the pelvic fins
-follow, and the whiskers sway. Strokes, waves, laps, and drifts close on whole
-numbers each loop, so the last frame flows into the first; frame numbers wrap
-around the loop of `motion::frame_count` frames. `motion::calculate_swim_pose`
-returns each frame's pose, and `render::render_koi` still draws the fixed pose
-for static exports. Frame timing lives in `src/motion.rs`, and the lap, hover
-framing, and depth in `src/render.rs`. Exercise the poses with
+follow, and the whiskers sway. The mouth, a rim in the body's color around a
+dark opening, breathes while the koi laps, gulps while it rests or feeds, and
+takes one slow gulp with deep rest's fin flick; closed, it draws nothing.
+Strokes, waves, laps, and drifts close on whole numbers each loop, so the last
+frame flows into the first; frame numbers wrap around the loop of
+`motion::frame_count` frames. `motion::calculate_swim_pose` returns each frame's
+pose, and `render::render_koi` still draws the fixed pose for static exports.
+Frame timing lives in `src/motion.rs`, and the lap, hover framing, and depth in
+`src/render.rs`. Exercise the poses with
 `cargo test --offline --locked --test motion`.
 
 ### Behavior

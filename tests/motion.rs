@@ -7,7 +7,7 @@ use git_koi::motion::{Course, SwimPose, calculate_swim_pose, frame_count};
 /// so is compared around the circle.
 type PoseValue = (&'static str, fn(&SwimPose) -> f64, bool);
 
-const POSE_VALUES: [PoseValue; 16] = [
+const POSE_VALUES: [PoseValue; 17] = [
     ("lap angle", read_lap_angle, true),
     ("wave phase", |pose| pose.wave_phase_radians, true),
     ("wave strength", |pose| pose.wave_strength, false),
@@ -49,10 +49,11 @@ const POSE_VALUES: [PoseValue; 16] = [
         |pose| pose.feeding_phase.unwrap_or(0.0) * TAU,
         true,
     ),
+    ("mouth opening", |pose| pose.mouth_opening, false),
 ];
 
 /// The largest step each pose value may take between frames, in POSE_VALUES order.
-const STEP_LIMITS: [(Behavior, [f64; 16]); 5] = [
+const STEP_LIMITS: [(Behavior, [f64; 17]); 5] = [
     (
         Behavior::Cruise,
         [
@@ -72,6 +73,7 @@ const STEP_LIMITS: [(Behavior, [f64; 16]); 5] = [
             0.0,
             0.0,
             0.0,
+            0.2,
         ],
     ),
     (
@@ -93,6 +95,7 @@ const STEP_LIMITS: [(Behavior, [f64; 16]); 5] = [
             0.0,
             0.0,
             0.0,
+            0.2,
         ],
     ),
     (
@@ -114,6 +117,7 @@ const STEP_LIMITS: [(Behavior, [f64; 16]); 5] = [
             0.3,
             0.0,
             0.0,
+            0.22,
         ],
     ),
     (
@@ -135,6 +139,7 @@ const STEP_LIMITS: [(Behavior, [f64; 16]); 5] = [
             0.12,
             0.0,
             0.0,
+            0.2,
         ],
     ),
     (
@@ -156,6 +161,7 @@ const STEP_LIMITS: [(Behavior, [f64; 16]); 5] = [
             0.3,
             0.0,
             TAU * 3.0 / 90.0 + 1e-9,
+            0.22,
         ],
     ),
 ];
@@ -345,7 +351,45 @@ fn surface_feeding_rests_at_the_surface_with_ripples_on_its_own_beat() {
     }
 }
 
-fn assert_pose_values_flow(behavior: Behavior, step_limits: [f64; 16]) {
+#[test]
+fn the_mouth_breathes_while_lapping_and_gulps_while_resting() {
+    // Separate openings around the loop, and the widest opening.
+    let measure = |behavior| {
+        let openings: Vec<f64> = collect_loop(behavior)
+            .iter()
+            .map(|pose| pose.mouth_opening)
+            .collect();
+        let opening_count = openings
+            .iter()
+            .zip(openings.iter().cycle().skip(1))
+            .filter(|(opening, next_opening)| **opening <= 0.1 && **next_opening > 0.1)
+            .count();
+        (opening_count, openings.iter().copied().fold(0.0, f64::max))
+    };
+    for behavior in [Behavior::Cruise, Behavior::Dart] {
+        let (breath_count, widest) = measure(behavior);
+        assert_eq!(breath_count, 5, "{behavior:?}");
+        assert!((widest - 0.7).abs() < 1e-9, "{behavior:?}");
+    }
+    for behavior in [Behavior::Rest, Behavior::SurfaceFeeding] {
+        let (gulp_count, widest) = measure(behavior);
+        assert_eq!(gulp_count, 3, "{behavior:?}");
+        assert!(widest > 0.99, "{behavior:?}");
+    }
+    let deep_rest_poses = collect_loop(Behavior::DeepRest);
+    let open_frames: Vec<usize> = (0..deep_rest_poses.len())
+        .filter(|&frame_index| deep_rest_poses[frame_index].mouth_opening > 0.0)
+        .collect();
+    assert_eq!(measure(Behavior::DeepRest).0, 1);
+    assert!(
+        open_frames
+            .iter()
+            .all(|frame_index| (66..=82).contains(frame_index))
+    );
+    assert!(open_frames.contains(&70) && open_frames.contains(&78));
+}
+
+fn assert_pose_values_flow(behavior: Behavior, step_limits: [f64; 17]) {
     let loop_frame_count = frame_count(behavior) as usize;
     let mut poses = collect_loop(behavior);
     poses.push(calculate_swim_pose(behavior, loop_frame_count as u32));
