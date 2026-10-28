@@ -272,6 +272,15 @@ fn deep_rest_flicks_one_fin_once_per_loop() {
     );
 }
 
+/// Surface feeding has no movement of its own yet.
+#[test]
+fn surface_feeding_swims_the_cruise_until_its_movement_lands() {
+    assert_eq!(
+        collect_loop(Behavior::SurfaceFeeding),
+        collect_loop(Behavior::Cruise)
+    );
+}
+
 fn assert_pose_values_flow(behavior: Behavior, step_limits: [f64; 15]) {
     let loop_frame_count = frame_count(behavior) as usize;
     let mut poses = collect_loop(behavior);

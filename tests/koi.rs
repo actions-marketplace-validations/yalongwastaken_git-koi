@@ -262,6 +262,7 @@ fn recent_activity_counts_quiet_days_the_last_week_and_complete_weeks() {
             quiet_day_count: 2,
             recent_contributions: 2,
             complete_week_contributions: vec![7, 2],
+            observation_week_contributions: vec![0, 0],
         }
     );
     // Active on the observation date, partway through the first week.
@@ -271,14 +272,20 @@ fn recent_activity_counts_quiet_days_the_last_week_and_complete_weeks() {
             quiet_day_count: 0,
             recent_contributions: 3,
             complete_week_contributions: Vec::new(),
+            observation_week_contributions: vec![0, 0, 3],
         }
     );
     // Never active: every observed day is quiet.
     assert_eq!(activity_for(&[0; 5]).quiet_day_count, 5);
     // Observed on a Sunday, the full observation week is still in progress.
+    let sunday_activity = activity_for(&[1, 2, 3, 4, 5, 6, 7]);
     assert_eq!(
-        activity_for(&[1; 7]).complete_week_contributions,
+        sunday_activity.complete_week_contributions,
         Vec::<u64>::new()
+    );
+    assert_eq!(
+        sunday_activity.observation_week_contributions,
+        vec![1, 2, 3, 4, 5, 6, 7]
     );
     let mut empty_snapshot = build_snapshot_with_counts(&[1]);
     empty_snapshot
@@ -295,6 +302,7 @@ fn recent_activity_counts_quiet_days_the_last_week_and_complete_weeks() {
             quiet_day_count: 0,
             recent_contributions: 0,
             complete_week_contributions: Vec::new(),
+            observation_week_contributions: Vec::new(),
         }
     );
 }

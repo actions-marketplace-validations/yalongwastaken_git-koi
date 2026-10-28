@@ -230,20 +230,26 @@ framing, and depth in `src/render.rs`. Exercise the poses with
 
 ### Behavior
 
-`behavior::select_behavior` chooses the day's movement from the development's
-recent activity. The first matching rule wins:
+`behavior::select_behavior` chooses the koi's movement from the development's
+recent activity. A nightly run judges the day that just ended, the observation
+date, and the koi shows the result all of the next day. The first matching rule
+wins:
 
-| Behavior  | When                                                                                |
-| --------- | ----------------------------------------------------------------------------------- |
-| Deep rest | No contributions for 60 or more days                                                |
-| Rest      | No contributions for 14 or more days                                                |
-| Dart      | The total crossed 1,000, 5,000, 10,000, 25,000, 50,000, or 100,000 in the last week |
-| Dart      | The last seven days stand out: at most one in ten complete weeks matches them       |
-| Cruise    | Everything else                                                                     |
+| Behavior        | When the observation date                                                                      |
+| --------------- | ---------------------------------------------------------------------------------------------- |
+| Deep rest       | Ends 60 or more days without contributions                                                     |
+| Rest            | Ends 14 or more days without contributions                                                     |
+| Surface feeding | Is the first day with contributions in its Monday-Sunday week                                  |
+| Dart            | Falls within seven days of the total crossing 1,000, 5,000, 10,000, 25,000, 50,000, or 100,000 |
+| Dart            | Is a Sunday that finishes a busy week                                                          |
+| Cruise          | Is anything else                                                                               |
 
-Quiet days run up to the observation date. A standout week needs at least ten
-complete Monday-Sunday weeks of history, so a steady account cruises. Behavior
-changes only movement; growth, colors, and marks stay as they are. The rules and
+A finished week is busy when at most one in ten of the latest 52 complete weeks
+before it match or beat its total; with fewer than 10 complete weeks, no week is
+busy. So a steady account cruises, feeding shows once in every week with a
+contribution, and the koi darts at most one day a week beyond milestones.
+Behavior changes only movement; growth, colors, and marks stay as they are.
+Surface feeding swims the cruise until its own movement is drawn. The rules and
 thresholds live in `src/behavior.rs`. Exercise the rules with
 `cargo test --offline --locked --test behavior`.
 

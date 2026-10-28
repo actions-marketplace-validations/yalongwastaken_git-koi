@@ -169,7 +169,8 @@ pub(crate) const STILL_POSE: SwimPose = SwimPose {
 /// Frames in a behavior's loop at FRAMES_PER_SECOND.
 pub fn frame_count(behavior: Behavior) -> u32 {
     match behavior {
-        Behavior::Cruise => CRUISE_STYLE.loop_frame_count,
+        // Surface feeding swims the cruise until its own movement lands.
+        Behavior::Cruise | Behavior::SurfaceFeeding => CRUISE_STYLE.loop_frame_count,
         Behavior::Dart => DART_STYLE.loop_frame_count,
         Behavior::Rest => REST_FRAME_COUNT,
         Behavior::DeepRest => DEEP_REST_FRAME_COUNT,
@@ -246,7 +247,7 @@ impl Drive {
 
 fn calculate_drive(behavior: Behavior, loop_frame: u32) -> Drive {
     match behavior {
-        Behavior::Cruise => CRUISE_STYLE.calculate_drive(loop_frame),
+        Behavior::Cruise | Behavior::SurfaceFeeding => CRUISE_STYLE.calculate_drive(loop_frame),
         Behavior::Dart => DART_STYLE.calculate_drive(loop_frame),
         Behavior::Rest => calculate_rest_drive(loop_frame),
         Behavior::DeepRest => calculate_deep_rest_drive(loop_frame),

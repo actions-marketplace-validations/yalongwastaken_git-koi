@@ -37,6 +37,9 @@ pub struct RecentActivity {
     /// Contributions in each complete Monday-Sunday week, oldest first. The
     /// observation week is still in progress and is left out.
     pub complete_week_contributions: Vec<u64>,
+    /// Each observed day of the observation week, from Monday through the
+    /// observation date.
+    pub observation_week_contributions: Vec<u64>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -180,6 +183,11 @@ fn measure_recent_activity(contribution_summary: &ContributionSummary) -> Recent
         *week_day_count += 1;
     }
     let observation_week = observed_on.iso_week();
+    let observation_monday = observed_on
+        .checked_sub_days(Days::new(u64::from(
+            observed_on.weekday().num_days_from_monday(),
+        )))
+        .expect("observation dates are far from the calendar's start");
     RecentActivity {
         quiet_day_count,
         recent_contributions,
@@ -189,6 +197,10 @@ fn measure_recent_activity(contribution_summary: &ContributionSummary) -> Recent
                 week_day_count == DAYS_PER_WEEK && iso_week != observation_week
             })
             .map(|(_, (week_contributions, _))| week_contributions)
+            .collect(),
+        observation_week_contributions: daily_counts
+            .range(observation_monday..=observed_on)
+            .map(|(_, &contribution_count)| u64::from(contribution_count))
             .collect(),
     }
 }
