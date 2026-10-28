@@ -205,6 +205,13 @@ fn render_pose(
             });
         }
     }
+    paint_mouth(
+        &mut rgba_pixels,
+        &body_spine,
+        koi_body,
+        pose_center,
+        swim_pose.mouth_opening,
+    );
     let fish_pixel_mask: Vec<bool> = rgba_pixels
         .iter()
         .map(|pixel_channels| pixel_channels[3] != 0)
@@ -213,10 +220,187 @@ fn render_pose(
         calculate_whisker_points(&body_spine, koi_anatomy, swim_pose.whisker_sway_radians);
     paint_whiskers(&mut rgba_pixels, &whisker_points, pose_center);
     paint_outline(&mut rgba_pixels);
+    if let Some(feeding_phase) = swim_pose.feeding_phase {
+        paint_feeding(
+            &mut rgba_pixels,
+            &body_spine,
+            koi_anatomy,
+            pose_center,
+            feeding_phase,
+        );
+    }
     if swim_pose.depth > 0.0 {
         paint_depth(&mut rgba_pixels, &fish_pixel_mask, swim_pose.depth);
     }
     KoiFrame { rgba_pixels }
+}
+
+/// Where the mouth opens: on the snout's center line, just inside its front.
+fn calculate_mouth_position(body_spine: &[CurvePoint]) -> [f64; 2] {
+    const MOUTH_FORWARD_FRACTION: f64 = 0.75;
+    let snout = body_spine[0];
+    let forward_direction = calculate_forward_direction(body_spine, 0);
+    [0, 1].map(|axis_index| {
+        snout.position[axis_index]
+            + forward_direction[axis_index] * snout.half_width_pixels * MOUTH_FORWARD_FRACTION
+    })
+}
+
+/// The mouth: a circle at the front of the snout with a rim in the body's color around
+/// a dark opening, growing from under a pixel to half the snout's width as it opens.
+/// It is painted before the outline, so it is outlined like the koi, and a mostly
+/// closed mouth paints nothing.
+fn paint_mouth(
+    rgba_pixels: &mut [[u8; 4]],
+    body_spine: &[CurvePoint],
+    koi_body: KoiBody,
+    pose_center: [f64; 2],
+    mouth_opening: f64,
+) {
+    const VISIBLE_OPENING: f64 = 0.1;
+    const CLOSED_RADIUS_PIXELS: f64 = 0.8;
+    const OPEN_RADIUS_PER_SNOUT_RADIUS: f64 = 0.5;
+    const MIN_OPEN_RADIUS_PIXELS: f64 = 1.8;
+    const RIM_WIDTH_PIXELS: f64 = 0.9;
+    if mouth_opening <= VISIBLE_OPENING {
+        return;
+    }
+    let open_radius_pixels = (body_spine[0].half_width_pixels * OPEN_RADIUS_PER_SNOUT_RADIUS)
+        .max(MIN_OPEN_RADIUS_PIXELS);
+    let radius_pixels = interpolate(
+        CLOSED_RADIUS_PIXELS,
+        open_radius_pixels,
+        mouth_opening.min(1.0),
+    );
+    let mouth_world = calculate_mouth_position(body_spine);
+    let frame_sizes = [
+        f64::from(FRAME_WIDTH_PIXELS),
+        f64::from(FRAME_HEIGHT_PIXELS),
+    ];
+    let mouth = [0, 1].map(|axis_index| {
+        mouth_world[axis_index] - pose_center[axis_index] + frame_sizes[axis_index] / 2.0
+    });
+    let rim_color = koi_body.select_mouth_rim_color();
+    let frame_width = FRAME_WIDTH_PIXELS as usize;
+    let first_y = (mouth[1] - radius_pixels).floor().max(0.0) as usize;
+    let last_y = ((mouth[1] + radius_pixels).ceil() as usize).min(FRAME_HEIGHT_PIXELS as usize - 1);
+    let first_x = (mouth[0] - radius_pixels).floor().max(0.0) as usize;
+    let last_x = ((mouth[0] + radius_pixels).ceil() as usize).min(frame_width - 1);
+    for pixel_y in first_y..=last_y {
+        for pixel_x in first_x..=last_x {
+            let distance_pixels =
+                (pixel_x as f64 + 0.5 - mouth[0]).hypot(pixel_y as f64 + 0.5 - mouth[1]);
+            if distance_pixels <= radius_pixels {
+                rgba_pixels[pixel_y * frame_width + pixel_x] =
+                    if distance_pixels > radius_pixels - RIM_WIDTH_PIXELS {
+                        rim_color
+                    } else {
+                        OUTLINE_COLOR
+                    };
+            }
+        }
+    }
+}
+
+/// Surface feeding: ripple rings spreading from the mouth and food pellets drifting in
+/// to it, drawn on the water around the koi. Where the frame edge leaves too little
+/// room, both shrink toward the mouth instead of running off the edge.
+fn paint_feeding(
+    rgba_pixels: &mut [[u8; 4]],
+    body_spine: &[CurvePoint],
+    koi_anatomy: &KoiAnatomy,
+    pose_center: [f64; 2],
+    feeding_phase: f64,
+) {
+    const RING_COUNT: usize = 3;
+    const RING_WIDTH_PER_BODY_LENGTH: f64 = 0.3;
+    const RING_HEIGHT_PER_WIDTH: f64 = 0.4;
+    const RING_ANGLE_STEP_RADIANS: f64 = 0.035;
+    const PELLET_COUNT: usize = 5;
+    const PELLET_NEAREST_PIXELS: f64 = 4.0;
+    const PELLET_REACH_PIXELS: f64 = 14.0;
+    const PELLET_WANDER_PIXELS: f64 = 9.0;
+    // Pellets vanish just before they reach the mouth.
+    const PELLET_EATEN_LIFE: f64 = 0.92;
+    const PELLET_COLORS: [[u8; 4]; 2] = [[228, 166, 114, 255], [184, 111, 80, 255]];
+    // A clear pixel between the extras and the frame edge, plus rounding.
+    const EDGE_MARGIN_PIXELS: f64 = 2.0;
+    let frame_sizes = [
+        f64::from(FRAME_WIDTH_PIXELS),
+        f64::from(FRAME_HEIGHT_PIXELS),
+    ];
+    let mouth_world = calculate_mouth_position(body_spine);
+    let mouth = [0, 1].map(|axis_index| {
+        mouth_world[axis_index] - pose_center[axis_index] + frame_sizes[axis_index] / 2.0
+    });
+    let room = [0, 1].map(|axis_index| {
+        (mouth[axis_index] - EDGE_MARGIN_PIXELS)
+            .min(frame_sizes[axis_index] - 1.0 - EDGE_MARGIN_PIXELS - mouth[axis_index])
+            .max(0.0)
+    });
+    let forward_direction = calculate_forward_direction(body_spine, 0);
+    let frame_width = FRAME_WIDTH_PIXELS as usize;
+    let mut paint_water = |point: [f64; 2], color: [u8; 4], dither_limit: f64| {
+        let [pixel_x, pixel_y] = point.map(f64::floor);
+        if !(0.0..frame_sizes[0]).contains(&pixel_x) || !(0.0..frame_sizes[1]).contains(&pixel_y) {
+            return;
+        }
+        let pixel_index = pixel_y as usize * frame_width + pixel_x as usize;
+        if rgba_pixels[pixel_index][3] == 0
+            && calculate_dither_threshold([pixel_x as u32, pixel_y as u32]) < dither_limit
+        {
+            rgba_pixels[pixel_index] = color;
+        }
+    };
+    let largest_ring_width = koi_anatomy.body_length_pixels * RING_WIDTH_PER_BODY_LENGTH * 0.85;
+    let ring_scale = 1.0_f64
+        .min(room[0] / largest_ring_width)
+        .min(room[1] / (largest_ring_width * RING_HEIGHT_PER_WIDTH));
+    for ring_index in 0..RING_COUNT {
+        let ring_phase = (feeding_phase + ring_index as f64 / RING_COUNT as f64).fract();
+        let ring_width = ring_scale
+            * koi_anatomy.body_length_pixels
+            * RING_WIDTH_PER_BODY_LENGTH
+            * (0.25 + 0.6 * ring_phase);
+        let ring_color = WHITE_RAMP[if ring_index % 2 == 1 { 2 } else { 1 }];
+        let mut ring_angle: f64 = 0.0;
+        while ring_angle < TAU {
+            paint_water(
+                [
+                    mouth[0] + ring_angle.cos() * ring_width,
+                    mouth[1] + ring_angle.sin() * ring_width * RING_HEIGHT_PER_WIDTH,
+                ],
+                ring_color,
+                (1.0 - ring_phase) * 0.75,
+            );
+            ring_angle += RING_ANGLE_STEP_RADIANS;
+        }
+    }
+    // The second pellet pixel sits one to the right, so leave it room too.
+    let farthest_pellet_pixels = PELLET_NEAREST_PIXELS + PELLET_REACH_PIXELS + PELLET_WANDER_PIXELS;
+    let pellet_scale = 1.0_f64.min((room[0].min(room[1]) - 1.0).max(0.0) / farthest_pellet_pixels);
+    for pellet_index in 0..PELLET_COUNT {
+        let life = (feeding_phase + pellet_index as f64 / PELLET_COUNT as f64).fract();
+        if life >= PELLET_EATEN_LIFE {
+            continue;
+        }
+        let reach = PELLET_NEAREST_PIXELS + (1.0 - life) * PELLET_REACH_PIXELS;
+        let wander = (1.0 - life) * PELLET_WANDER_PIXELS;
+        let pellet_point = [
+            mouth[0]
+                + pellet_scale
+                    * (forward_direction[0] * reach + (pellet_index as f64 * 2.1).sin() * wander),
+            mouth[1]
+                + pellet_scale
+                    * (forward_direction[1] * reach + (pellet_index as f64 * 1.7).cos() * wander),
+        ];
+        paint_water(pellet_point, PELLET_COLORS[0], 1.0);
+        paint_water(
+            [pellet_point[0] + 1.0, pellet_point[1]],
+            PELLET_COLORS[1],
+            1.0,
+        );
+    }
 }
 
 /// Under water the koi becomes a blue koi: each body and fin pixel maps its own
@@ -1037,4 +1221,58 @@ fn calculate_dither_threshold(pixel_position: [u32; 2]) -> f64 {
     let dither_y = pixel_position[1] as usize % DITHER_RANKS.len();
     (f64::from(DITHER_RANKS[dither_y][dither_x]) + 0.5)
         / (DITHER_RANKS.len() * DITHER_RANKS[0].len()) as f64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Paint only the mouth on an empty canvas centered on it.
+    fn paint_mouth_alone(koi_body: KoiBody, mouth_opening: f64) -> Vec<[u8; 4]> {
+        let koi_anatomy = calculate_anatomy(1_500);
+        let body_spine = build_spine(&koi_anatomy, &STILL_POSE);
+        let mut rgba_pixels = vec![[0; 4]; (FRAME_WIDTH_PIXELS * FRAME_HEIGHT_PIXELS) as usize];
+        let mouth_position = calculate_mouth_position(&body_spine);
+        paint_mouth(
+            &mut rgba_pixels,
+            &body_spine,
+            koi_body,
+            mouth_position,
+            mouth_opening,
+        );
+        rgba_pixels
+    }
+
+    fn center_pixel(rgba_pixels: &[[u8; 4]]) -> [u8; 4] {
+        rgba_pixels
+            [(FRAME_HEIGHT_PIXELS / 2 * FRAME_WIDTH_PIXELS + FRAME_WIDTH_PIXELS / 2) as usize]
+    }
+
+    fn count_painted(rgba_pixels: &[[u8; 4]]) -> usize {
+        rgba_pixels
+            .iter()
+            .filter(|pixel_channels| pixel_channels[3] != 0)
+            .count()
+    }
+
+    #[test]
+    fn the_mouth_opens_as_a_body_colored_rim_around_a_dark_opening() {
+        assert_eq!(count_painted(&paint_mouth_alone(KoiBody::White, 0.1)), 0);
+        for (koi_body, rim_color) in [
+            (KoiBody::White, [192, 203, 220, 255]),
+            (KoiBody::Black, [58, 68, 102, 255]),
+        ] {
+            let open_mouth = paint_mouth_alone(koi_body, 1.0);
+            assert_eq!(center_pixel(&open_mouth), OUTLINE_COLOR);
+            assert!(open_mouth.contains(&rim_color), "{koi_body:?}");
+            assert!(
+                open_mouth
+                    .iter()
+                    .all(|&pixel| pixel == [0; 4] || pixel == OUTLINE_COLOR || pixel == rim_color)
+            );
+        }
+        let half_open = count_painted(&paint_mouth_alone(KoiBody::White, 0.5));
+        let wide_open = count_painted(&paint_mouth_alone(KoiBody::White, 1.0));
+        assert!(0 < half_open && half_open < wide_open);
+    }
 }

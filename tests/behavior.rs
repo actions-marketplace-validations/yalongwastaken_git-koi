@@ -22,22 +22,89 @@ fn quiet_days_bring_rest_then_deep_rest() {
 }
 
 #[test]
-fn only_a_week_that_stands_out_darts() {
-    let behavior_after = |earlier_week_totals: &[u32], last_week_total: u32| {
+fn the_first_contribution_of_a_week_brings_surface_feeding() {
+    let steady_weeks = vec![1; 20 * 7];
+    let behavior_after = |week_so_far: &[u32]| {
+        select_behavior(&develop_from_daily_counts(
+            &[steady_weeks.clone(), week_so_far.to_vec()].concat(),
+        ))
+    };
+    assert_eq!(behavior_after(&[5]), Behavior::SurfaceFeeding);
+    assert_eq!(behavior_after(&[0, 0, 3]), Behavior::SurfaceFeeding);
+    assert_eq!(behavior_after(&[0, 0, 3, 1]), Behavior::Cruise);
+    assert_eq!(behavior_after(&[0, 0, 3, 0]), Behavior::Cruise);
+}
+
+#[test]
+fn only_a_finished_week_that_stands_out_darts() {
+    let behavior_after = |earlier_week_totals: &[u32], finished_week: &[u32]| {
         let mut daily_counts = Vec::new();
         for &week_total in earlier_week_totals {
             daily_counts.extend([0, 0, week_total, 0, 0, 0, 0]);
         }
-        daily_counts.extend([0, 0, 0, 0, 0, 0, last_week_total]);
+        daily_counts.extend(finished_week);
         select_behavior(&develop_from_daily_counts(&daily_counts))
     };
     let ranked_weeks: Vec<u32> = (1..=20).collect();
-    assert_eq!(behavior_after(&ranked_weeks, 19), Behavior::Dart);
-    assert_eq!(behavior_after(&ranked_weeks, 18), Behavior::Cruise);
-    assert_eq!(behavior_after(&ranked_weeks, 100), Behavior::Dart);
-    assert_eq!(behavior_after(&ranked_weeks, 0), Behavior::Cruise);
-    assert_eq!(behavior_after(&[7; 20], 7), Behavior::Cruise);
-    assert_eq!(behavior_after(&ranked_weeks[..9], 100), Behavior::Cruise);
+    let finished_week = |week_total: u32| [week_total - 1, 0, 0, 0, 0, 0, 1];
+    assert_eq!(
+        behavior_after(&ranked_weeks, &finished_week(19)),
+        Behavior::Dart
+    );
+    assert_eq!(
+        behavior_after(&ranked_weeks, &finished_week(18)),
+        Behavior::Cruise
+    );
+    assert_eq!(
+        behavior_after(&ranked_weeks, &finished_week(100)),
+        Behavior::Dart
+    );
+    // Judged on Saturday, the week has not finished.
+    assert_eq!(
+        behavior_after(&ranked_weeks, &finished_week(100)[..6]),
+        Behavior::Cruise
+    );
+    assert_eq!(behavior_after(&[7; 20], &[1; 7]), Behavior::Cruise);
+    assert_eq!(
+        behavior_after(&ranked_weeks[..9], &finished_week(100)),
+        Behavior::Cruise
+    );
+}
+
+#[test]
+fn a_busy_week_is_compared_with_the_last_52_weeks_only() {
+    let mut daily_counts = Vec::new();
+    for _ in 0..10 {
+        daily_counts.extend([0, 0, 500, 0, 0, 0, 0]);
+    }
+    for week_total in 1..=52 {
+        daily_counts.extend([0, 0, week_total, 0, 0, 0, 0]);
+    }
+    daily_counts.extend([59, 0, 0, 0, 0, 0, 1]);
+    assert_eq!(
+        select_behavior(&develop_from_daily_counts(&daily_counts)),
+        Behavior::Dart
+    );
+}
+
+#[test]
+fn surface_feeding_comes_before_darting() {
+    let ranked_weeks: Vec<u32> = (1..=20)
+        .flat_map(|week_total| [0, 0, week_total, 0, 0, 0, 0])
+        .collect();
+    let busy_week_starting_sunday = [ranked_weeks, vec![0, 0, 0, 0, 0, 0, 100]].concat();
+    assert_eq!(
+        select_behavior(&develop_from_daily_counts(&busy_week_starting_sunday)),
+        Behavior::SurfaceFeeding
+    );
+    let busy_weeks = vec![7; 20 * 7];
+    let milestone_on_monday = [busy_weeks, vec![30]].concat();
+    let milestone_development = develop_from_daily_counts(&milestone_on_monday);
+    assert_eq!(milestone_development.total_contributions, 1_010);
+    assert_eq!(
+        select_behavior(&milestone_development),
+        Behavior::SurfaceFeeding
+    );
 }
 
 #[test]
@@ -84,10 +151,11 @@ fn quiet_days_change_behavior_only_at_the_thresholds_and_nothing_else() {
             active_development.streaks.longest
         );
     }
+    // Returning after 70 quiet days is the first contribution of its week.
     let returning_counts = [steady_weeks, vec![0; 70], vec![5]].concat();
     assert_eq!(
         select_behavior(&develop_from_daily_counts(&returning_counts)),
-        Behavior::Cruise
+        Behavior::SurfaceFeeding
     );
 }
 

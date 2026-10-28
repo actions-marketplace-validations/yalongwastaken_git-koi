@@ -62,11 +62,13 @@ env:
 ```
 
 The calendar is requested a year at a time and its dates are in UTC; the
-observation date is the latest date GitHub reports. Before writing, the snapshot
-is checked against the history rules below, so gaps, conflicting days, or a
-calendar that starts after the account was created fail instead of producing a
-partial snapshot. Success prints only the snapshot. Collection errors go to
-standard error and exit 1; invalid usage exits 2. See
+observation date is the latest date GitHub reports up to the last complete UTC
+day, so a run just after midnight observes the day that just ended. An account
+created on the day of the run has no complete day yet and gets an empty history.
+Before writing, the snapshot is checked against the history rules below, so
+gaps, conflicting days, or a calendar that starts after the account was created
+fail instead of producing a partial snapshot. Success prints only the snapshot.
+Collection errors go to standard error and exit 1; invalid usage exits 2. See
 [the collection contract](src/collect.rs) and exercise it with
 `cargo test --offline --locked --test collect`.
 
@@ -211,40 +213,51 @@ strokes each followed by a glide. Darting swims two fast laps of four bursts,
 with the side fins tucked through each burst and spread through the glide. Laps
 are as wide as the frame allows and tighter for longer koi, so every size fits.
 Resting hovers in place for six seconds, a little deeper, swinging and drifting
-slowly through a slow beat and glide with gently sculling fins. Deep rest hovers
-lower still for eight seconds, barely moving, with one fin flick per loop. A
-hovering loop is framed once, centered on the koi's sweep, and its drift shrinks
-only as far as the largest koi need to stay inside. Under water the koi turns
-toward water blue and a dithered share of it drops out, more with depth.
+slowly through a slow beat and glide with gently sculling fins. Surface feeding
+moves the same way at the surface, with ripple rings spreading from the mouth
+and food pellets drifting in; near the frame edge they shrink toward the mouth
+instead of running off it. Deep rest hovers lower still for eight seconds,
+barely moving, with one fin flick per loop. A hovering loop is framed once,
+centered on the koi's sweep, and its drift shrinks only as far as the largest
+koi need to stay inside. Under water the koi turns toward water blue and a
+dithered share of it drops out, more with depth.
 
 A wave travels from head to tail, growing toward the tail. The tail lobes bend
 behind it, slightly out of step, and the tail fan opens on each stroke. The side
 fins scull and flare, with their tips trailing their roots; the pelvic fins
-follow, and the whiskers sway. Strokes, waves, laps, and drifts close on whole
-numbers each loop, so the last frame flows into the first; frame numbers wrap
-around the loop of `motion::frame_count` frames. `motion::calculate_swim_pose`
-returns each frame's pose, and `render::render_koi` still draws the fixed pose
-for static exports. Frame timing lives in `src/motion.rs`, and the lap, hover
-framing, and depth in `src/render.rs`. Exercise the poses with
+follow, and the whiskers sway. The mouth, a rim in the body's color around a
+dark opening, breathes while the koi laps, gulps while it rests or feeds, and
+takes one slow gulp with deep rest's fin flick; closed, it draws nothing.
+Strokes, waves, laps, and drifts close on whole numbers each loop, so the last
+frame flows into the first; frame numbers wrap around the loop of
+`motion::frame_count` frames. `motion::calculate_swim_pose` returns each frame's
+pose, and `render::render_koi` still draws the fixed pose for static exports.
+Frame timing lives in `src/motion.rs`, and the lap, hover framing, and depth in
+`src/render.rs`. Exercise the poses with
 `cargo test --offline --locked --test motion`.
 
 ### Behavior
 
-`behavior::select_behavior` chooses the day's movement from the development's
-recent activity. The first matching rule wins:
+`behavior::select_behavior` chooses the koi's movement from the development's
+recent activity. A nightly run judges the day that just ended, the observation
+date, and the koi shows the result all of the next day. The first matching rule
+wins:
 
-| Behavior  | When                                                                                |
-| --------- | ----------------------------------------------------------------------------------- |
-| Deep rest | No contributions for 60 or more days                                                |
-| Rest      | No contributions for 14 or more days                                                |
-| Dart      | The total crossed 1,000, 5,000, 10,000, 25,000, 50,000, or 100,000 in the last week |
-| Dart      | The last seven days stand out: at most one in ten complete weeks matches them       |
-| Cruise    | Everything else                                                                     |
+| Behavior        | When the observation date                                                                      |
+| --------------- | ---------------------------------------------------------------------------------------------- |
+| Deep rest       | Ends 60 or more days without contributions                                                     |
+| Rest            | Ends 14 or more days without contributions                                                     |
+| Surface feeding | Is the first day with contributions in its Monday-Sunday week                                  |
+| Dart            | Falls within seven days of the total crossing 1,000, 5,000, 10,000, 25,000, 50,000, or 100,000 |
+| Dart            | Is a Sunday that finishes a busy week                                                          |
+| Cruise          | Is anything else                                                                               |
 
-Quiet days run up to the observation date. A standout week needs at least ten
-complete Monday-Sunday weeks of history, so a steady account cruises. Behavior
-changes only movement; growth, colors, and marks stay as they are. The rules and
-thresholds live in `src/behavior.rs`. Exercise the rules with
+A finished week is busy when at most one in ten of the latest 52 complete weeks
+before it match or beat its total; with fewer than 10 complete weeks, no week is
+busy. So a steady account cruises, feeding shows once in every week with a
+contribution, and the koi darts at most one day a week beyond milestones.
+Behavior changes only movement; growth, colors, and marks stay as they are. The
+rules and thresholds live in `src/behavior.rs`. Exercise the rules with
 `cargo test --offline --locked --test behavior`.
 
 ### Koi Library

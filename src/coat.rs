@@ -201,6 +201,16 @@ impl KoiBody {
         }
     }
 
+    /// The mouth's rim: a light shade of the body's own color, or on the black body its
+    /// lightest shade.
+    pub(crate) fn select_mouth_rim_color(self) -> [u8; 4] {
+        let ground_ramp = self.select_ground_ramp();
+        match self {
+            Self::Black => ground_ramp[ground_ramp.len() - 1],
+            _ => ground_ramp[ground_ramp.len() - 2],
+        }
+    }
+
     /// The current-streak fin color, chosen to stand out against this body's fins.
     fn select_streak_fin_ramp(self) -> &'static [[u8; 4]] {
         match self {

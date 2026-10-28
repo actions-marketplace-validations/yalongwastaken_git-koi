@@ -9,6 +9,8 @@ pub enum Behavior {
     DeepRest,
     /// Hovers in place a little deeper, with a slow beat and glide.
     Rest,
+    /// Hovers at the surface and gulps.
+    SurfaceFeeding,
     /// Two fast laps of strong bursts and glides.
     Dart,
     /// One slow lap; the everyday swim.
@@ -19,38 +21,55 @@ const DEEP_REST_QUIET_DAYS: u32 = 60;
 const REST_QUIET_DAYS: u32 = 14;
 /// Totals whose crossing earns a week of darting.
 const DART_MILESTONES: [u64; 6] = [1_000, 5_000, 10_000, 25_000, 50_000, 100_000];
+/// A busy week is compared with at most this many of the latest complete weeks.
+const DART_COMPARED_WEEKS: usize = 52;
 /// A top tenth means little with fewer complete weeks than this.
 const DART_MIN_COMPLETE_WEEKS: usize = 10;
-/// A busy week is matched or beaten by at most one in this many complete weeks.
+/// A busy week is matched or beaten by at most one in this many compared weeks.
 const DART_WEEK_SHARE_DENOMINATOR: usize = 10;
+const DAYS_PER_WEEK: usize = 7;
 
-/// Choose the day's movement; the first matching rule wins:
+/// Choose the movement for the day after the observation date. A nightly run judges
+/// the day that just ended, and the koi shows the result all of the next day. The
+/// first matching rule wins:
 ///
-/// | Behavior | When |
+/// | Behavior | When the observation date |
 /// | --- | --- |
-/// | Deep rest | DEEP_REST_QUIET_DAYS or more quiet days |
-/// | Rest | REST_QUIET_DAYS or more quiet days |
-/// | Dart | the total crossed a milestone in the last seven days |
-/// | Dart | the last seven days stand out in the top tenth of complete weeks |
-/// | Cruise | everything else |
+/// | Deep rest | ends DEEP_REST_QUIET_DAYS or more quiet days |
+/// | Rest | ends REST_QUIET_DAYS or more quiet days |
+/// | Surface feeding | is the first day with contributions in its Monday-Sunday week |
+/// | Dart | falls within seven days of the total crossing a milestone |
+/// | Dart | is a Sunday that finishes a busy week |
+/// | Cruise | is anything else |
 ///
-/// Quiet days run up to the observation date. A busy week needs at least
-/// DART_MIN_COMPLETE_WEEKS complete weeks and must beat at least nine in ten of
-/// them, so a steady account cruises. This reads no clock and changes no growth,
-/// colors, or marks.
+/// A finished week is busy when at most one in ten of the latest
+/// DART_COMPARED_WEEKS complete weeks before it match or beat its total, and at
+/// least DART_MIN_COMPLETE_WEEKS weeks are compared. So a steady account cruises,
+/// and the koi darts at most one day a week beyond milestones. This reads no clock
+/// and changes no growth, colors, or marks.
 pub fn select_behavior(koi_development: &KoiDevelopment) -> Behavior {
     let recent_activity = &koi_development.recent_activity;
     if recent_activity.quiet_day_count >= DEEP_REST_QUIET_DAYS {
         Behavior::DeepRest
     } else if recent_activity.quiet_day_count >= REST_QUIET_DAYS {
         Behavior::Rest
+    } else if is_first_contribution_of_week(recent_activity) {
+        Behavior::SurfaceFeeding
     } else if has_crossed_milestone(koi_development.total_contributions, recent_activity)
-        || is_standout_week(recent_activity)
+        || is_finished_busy_week(recent_activity)
     {
         Behavior::Dart
     } else {
         Behavior::Cruise
     }
+}
+
+fn is_first_contribution_of_week(recent_activity: &RecentActivity) -> bool {
+    matches!(
+        recent_activity.observation_week_contributions.split_last(),
+        Some((&observed_day, earlier_days))
+            if observed_day > 0 && earlier_days.iter().all(|&day_contributions| day_contributions == 0)
+    )
 }
 
 fn has_crossed_milestone(total_contributions: u64, recent_activity: &RecentActivity) -> bool {
@@ -60,12 +79,17 @@ fn has_crossed_milestone(total_contributions: u64, recent_activity: &RecentActiv
         .any(|&milestone| earlier_total < milestone && milestone <= total_contributions)
 }
 
-fn is_standout_week(recent_activity: &RecentActivity) -> bool {
+fn is_finished_busy_week(recent_activity: &RecentActivity) -> bool {
+    let finished_week = &recent_activity.observation_week_contributions;
     let complete_weeks = &recent_activity.complete_week_contributions;
-    let matching_week_count = complete_weeks
+    let compared_weeks =
+        &complete_weeks[complete_weeks.len().saturating_sub(DART_COMPARED_WEEKS)..];
+    let week_total: u64 = finished_week.iter().sum();
+    let matching_week_count = compared_weeks
         .iter()
-        .filter(|&&week_contributions| week_contributions >= recent_activity.recent_contributions)
+        .filter(|&&week_contributions| week_contributions >= week_total)
         .count();
-    complete_weeks.len() >= DART_MIN_COMPLETE_WEEKS
-        && matching_week_count * DART_WEEK_SHARE_DENOMINATOR <= complete_weeks.len()
+    finished_week.len() == DAYS_PER_WEEK
+        && compared_weeks.len() >= DART_MIN_COMPLETE_WEEKS
+        && matching_week_count * DART_WEEK_SHARE_DENOMINATOR <= compared_weeks.len()
 }
