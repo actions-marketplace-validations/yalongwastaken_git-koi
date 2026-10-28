@@ -1,3 +1,4 @@
+pub mod behavior;
 pub mod coat;
 pub mod collect;
 pub mod history;

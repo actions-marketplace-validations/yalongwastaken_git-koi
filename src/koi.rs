@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 
-use chrono::{Datelike, NaiveDate, Weekday};
+use chrono::{Datelike, Days, IsoWeek, NaiveDate, Weekday};
 
 use crate::history::{
     AccountSnapshot, ConflictingRepository, ContributionHistoryError, ContributionSummary,
@@ -23,6 +23,20 @@ pub struct KoiDevelopment {
     pub total_contributions: u64,
     pub observed_on: NaiveDate,
     pub streaks: StreakDevelopment,
+    pub recent_activity: RecentActivity,
+}
+
+/// Recent activity as of the observation date, as counts rather than judgments.
+#[derive(Debug, Eq, PartialEq)]
+pub struct RecentActivity {
+    /// Days in the run of contribution-free days that ends on the observation date;
+    /// an account that has never contributed counts every observed day.
+    pub quiet_day_count: u32,
+    /// Contributions in the seven days ending on the observation date.
+    pub recent_contributions: u64,
+    /// Contributions in each complete Monday-Sunday week, oldest first. The
+    /// observation week is still in progress and is left out.
+    pub complete_week_contributions: Vec<u64>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -84,6 +98,7 @@ pub fn derive_koi_development(
         total_contributions: contribution_summary.total_contributions,
         observed_on: contribution_summary.observed_on,
         streaks: calculate_streak_development(&contribution_summary),
+        recent_activity: measure_recent_activity(&contribution_summary),
     })
 }
 
@@ -136,6 +151,45 @@ impl Error for KoiDevelopmentError {
             Self::Repositories(repository_error) => Some(repository_error),
             Self::MissingLanguageColors | Self::MissingLanguageColor(_) => None,
         }
+    }
+}
+
+fn measure_recent_activity(contribution_summary: &ContributionSummary) -> RecentActivity {
+    const RECENT_DAY_COUNT: u64 = 7;
+    const DAYS_PER_WEEK: u64 = 7;
+    let observed_on = contribution_summary.observed_on;
+    let daily_counts = &contribution_summary.daily_counts;
+    let quiet_day_count = daily_counts
+        .values()
+        .rev()
+        .take_while(|&&contribution_count| contribution_count == 0)
+        .count() as u32;
+    let recent_start = observed_on
+        .checked_sub_days(Days::new(RECENT_DAY_COUNT - 1))
+        .expect("observation dates are far from the calendar's start");
+    let recent_contributions = daily_counts
+        .range(recent_start..=observed_on)
+        .map(|(_, &contribution_count)| u64::from(contribution_count))
+        .sum();
+    let mut weekly_totals: BTreeMap<IsoWeek, (u64, u64)> = BTreeMap::new();
+    for (contribution_date, &contribution_count) in daily_counts {
+        let (week_contributions, week_day_count) = weekly_totals
+            .entry(contribution_date.iso_week())
+            .or_default();
+        *week_contributions += u64::from(contribution_count);
+        *week_day_count += 1;
+    }
+    let observation_week = observed_on.iso_week();
+    RecentActivity {
+        quiet_day_count,
+        recent_contributions,
+        complete_week_contributions: weekly_totals
+            .into_iter()
+            .filter(|&(iso_week, (_, week_day_count))| {
+                week_day_count == DAYS_PER_WEEK && iso_week != observation_week
+            })
+            .map(|(_, (week_contributions, _))| week_contributions)
+            .collect(),
     }
 }
 

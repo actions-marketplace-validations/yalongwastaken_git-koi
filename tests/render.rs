@@ -2,13 +2,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Cursor;
 
 use chrono::{Datelike, Days, NaiveDate};
+use git_koi::behavior::Behavior;
 use git_koi::coat::KoiBody;
 use git_koi::history::{AccountSnapshot, ContributionDay, ContributionWeek, LanguageColor};
 use git_koi::koi::{
     ADULT_CONTRIBUTIONS, FULL_COLOR_CONTRIBUTIONS, KoiDevelopment, MAX_GROWTH_CONTRIBUTIONS,
     RecentStreak, derive_koi_development,
 };
-use git_koi::motion::CRUISE_FRAME_COUNT;
+use git_koi::motion::frame_count;
 use git_koi::output::encode_png;
 use git_koi::render::{
     FRAME_HEIGHT_PIXELS, FRAME_WIDTH_PIXELS, KoiFrame, render_koi, render_swim_frame,
@@ -355,21 +356,25 @@ fn growth_slows_and_keeps_the_whole_fish_inside_a_transparent_frame() {
 #[test]
 fn swimming_keeps_the_whole_fish_inside_the_frame() {
     let mut koi_development = develop_with_languages(0, FOUR_LANGUAGE_MIX);
-    for contribution_total in [0, 1_500, ADULT_CONTRIBUTIONS, MAX_GROWTH_CONTRIBUTIONS] {
-        koi_development.total_contributions = contribution_total;
-        for frame_index in (0..CRUISE_FRAME_COUNT).step_by(8) {
-            let opaque_bounds = measure_opaque_bounds(&render_swim_frame(
-                &koi_development,
-                KoiBody::default(),
-                frame_index,
-            ));
-            assert!(
-                opaque_bounds.left_x > 0
-                    && opaque_bounds.top_y > 0
-                    && opaque_bounds.right_x < FRAME_WIDTH_PIXELS - 1
-                    && opaque_bounds.bottom_y < FRAME_HEIGHT_PIXELS - 1,
-                "{contribution_total} contributions leaves the frame at frame {frame_index}"
-            );
+    for behavior in [Behavior::Cruise, Behavior::Dart] {
+        for contribution_total in [0, 1_500, ADULT_CONTRIBUTIONS, MAX_GROWTH_CONTRIBUTIONS] {
+            koi_development.total_contributions = contribution_total;
+            for frame_index in (0..frame_count(behavior)).step_by(8) {
+                let opaque_bounds = measure_opaque_bounds(&render_swim_frame(
+                    &koi_development,
+                    KoiBody::default(),
+                    behavior,
+                    frame_index,
+                ));
+                assert!(
+                    opaque_bounds.left_x > 0
+                        && opaque_bounds.top_y > 0
+                        && opaque_bounds.right_x < FRAME_WIDTH_PIXELS - 1
+                        && opaque_bounds.bottom_y < FRAME_HEIGHT_PIXELS - 1,
+                    "{behavior:?} at {contribution_total} contributions leaves the frame at \
+                     frame {frame_index}"
+                );
+            }
         }
     }
 }
@@ -377,10 +382,18 @@ fn swimming_keeps_the_whole_fish_inside_the_frame() {
 #[test]
 fn the_swim_loop_is_seamless_and_never_jumps() {
     let koi_development = develop_with_languages(1_500, FOUR_LANGUAGE_MIX);
-    let swim_frames: Vec<_> = (0..=CRUISE_FRAME_COUNT)
-        .map(|frame_index| render_swim_frame(&koi_development, KoiBody::default(), frame_index))
+    let cruise_frame_count = frame_count(Behavior::Cruise);
+    let swim_frames: Vec<_> = (0..=cruise_frame_count)
+        .map(|frame_index| {
+            render_swim_frame(
+                &koi_development,
+                KoiBody::default(),
+                Behavior::Cruise,
+                frame_index,
+            )
+        })
         .collect();
-    assert_eq!(swim_frames[CRUISE_FRAME_COUNT as usize], swim_frames[0]);
+    assert_eq!(swim_frames[cruise_frame_count as usize], swim_frames[0]);
     let centroids: Vec<_> = swim_frames.iter().map(measure_opaque_centroid).collect();
     let centroid_steps: Vec<f64> = centroids
         .windows(2)
@@ -395,9 +408,9 @@ fn the_swim_loop_is_seamless_and_never_jumps() {
             .all(|&centroid_step| centroid_step > 0.0 && centroid_step < 8.0),
         "{centroid_steps:?}"
     );
-    let boundary_step = centroid_steps[CRUISE_FRAME_COUNT as usize - 1];
+    let boundary_step = centroid_steps[cruise_frame_count as usize - 1];
     let nearby_steps =
-        &centroid_steps[CRUISE_FRAME_COUNT as usize - 6..CRUISE_FRAME_COUNT as usize - 1];
+        &centroid_steps[cruise_frame_count as usize - 6..cruise_frame_count as usize - 1];
     let nearby_average = nearby_steps.iter().sum::<f64>() / nearby_steps.len() as f64;
     assert!((0.5..1.5).contains(&(boundary_step / nearby_average)));
     let opaque_counts: Vec<_> = swim_frames
