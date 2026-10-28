@@ -23,6 +23,12 @@ impl KoiFrame {
     pub fn as_rgba_bytes(&self) -> &[u8] {
         self.rgba_pixels.as_flattened()
     }
+
+    /// Build a frame from chosen pixels, for encoder tests that need colors no koi has.
+    #[cfg(test)]
+    pub(crate) fn from_rgba_pixels(rgba_pixels: Vec<[u8; 4]>) -> Self {
+        Self { rgba_pixels }
+    }
 }
 
 /// Render the koi in a centered, fixed swimming pose, colored from its languages on
