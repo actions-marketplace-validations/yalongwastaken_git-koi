@@ -7,7 +7,7 @@ use git_koi::motion::{Course, SwimPose, calculate_swim_pose, frame_count};
 /// so is compared around the circle.
 type PoseValue = (&'static str, fn(&SwimPose) -> f64, bool);
 
-const POSE_VALUES: [PoseValue; 15] = [
+const POSE_VALUES: [PoseValue; 16] = [
     ("lap angle", read_lap_angle, true),
     ("wave phase", |pose| pose.wave_phase_radians, true),
     ("wave strength", |pose| pose.wave_strength, false),
@@ -43,10 +43,16 @@ const POSE_VALUES: [PoseValue; 15] = [
     ("drift across", |pose| read_hover(pose).1[0], false),
     ("drift down", |pose| read_hover(pose).1[1], false),
     ("depth", |pose| pose.depth, false),
+    // A cycle from zero up to one, compared around the circle like an angle.
+    (
+        "feeding phase",
+        |pose| pose.feeding_phase.unwrap_or(0.0) * TAU,
+        true,
+    ),
 ];
 
 /// The largest step each pose value may take between frames, in POSE_VALUES order.
-const STEP_LIMITS: [(Behavior, [f64; 15]); 4] = [
+const STEP_LIMITS: [(Behavior, [f64; 16]); 5] = [
     (
         Behavior::Cruise,
         [
@@ -61,6 +67,7 @@ const STEP_LIMITS: [(Behavior, [f64; 15]); 4] = [
             0.12,
             0.03,
             0.13,
+            0.0,
             0.0,
             0.0,
             0.0,
@@ -85,6 +92,7 @@ const STEP_LIMITS: [(Behavior, [f64; 15]); 4] = [
             0.0,
             0.0,
             0.0,
+            0.0,
         ],
     ),
     (
@@ -104,6 +112,7 @@ const STEP_LIMITS: [(Behavior, [f64; 15]); 4] = [
             0.01,
             0.25,
             0.3,
+            0.0,
             0.0,
         ],
     ),
@@ -125,6 +134,28 @@ const STEP_LIMITS: [(Behavior, [f64; 15]); 4] = [
             0.1,
             0.12,
             0.0,
+            0.0,
+        ],
+    ),
+    (
+        Behavior::SurfaceFeeding,
+        [
+            0.0,
+            TAU / 15.0 + 1e-9,
+            0.1,
+            0.15,
+            0.15,
+            0.0,
+            0.06,
+            0.06,
+            0.12,
+            0.01,
+            0.07,
+            0.01,
+            0.25,
+            0.3,
+            0.0,
+            TAU * 3.0 / 90.0 + 1e-9,
         ],
     ),
 ];
@@ -272,16 +303,49 @@ fn deep_rest_flicks_one_fin_once_per_loop() {
     );
 }
 
-/// Surface feeding has no movement of its own yet.
 #[test]
-fn surface_feeding_swims_the_cruise_until_its_movement_lands() {
+fn surface_feeding_rests_at_the_surface_with_ripples_on_its_own_beat() {
     assert_eq!(
-        collect_loop(Behavior::SurfaceFeeding),
-        collect_loop(Behavior::Cruise)
+        frame_count(Behavior::SurfaceFeeding),
+        frame_count(Behavior::Rest)
     );
+    let feeding_poses = collect_loop(Behavior::SurfaceFeeding);
+    for (feeding_pose, rest_pose) in feeding_poses.iter().zip(collect_loop(Behavior::Rest)) {
+        assert_eq!(feeding_pose.depth, 0.0);
+        assert_eq!(
+            SwimPose {
+                depth: rest_pose.depth,
+                feeding_phase: None,
+                ..*feeding_pose
+            },
+            rest_pose
+        );
+    }
+    let feeding_phases: Vec<f64> = feeding_poses
+        .iter()
+        .map(|pose| pose.feeding_phase.unwrap())
+        .collect();
+    let cycle_starts = feeding_phases
+        .iter()
+        .zip(feeding_phases.iter().cycle().skip(1))
+        .filter(|(phase, next_phase)| next_phase < phase)
+        .count();
+    assert_eq!(cycle_starts, 3);
+    for behavior in [
+        Behavior::Cruise,
+        Behavior::Dart,
+        Behavior::Rest,
+        Behavior::DeepRest,
+    ] {
+        assert!(
+            collect_loop(behavior)
+                .iter()
+                .all(|pose| pose.feeding_phase.is_none())
+        );
+    }
 }
 
-fn assert_pose_values_flow(behavior: Behavior, step_limits: [f64; 15]) {
+fn assert_pose_values_flow(behavior: Behavior, step_limits: [f64; 16]) {
     let loop_frame_count = frame_count(behavior) as usize;
     let mut poses = collect_loop(behavior);
     poses.push(calculate_swim_pose(behavior, loop_frame_count as u32));

@@ -211,11 +211,14 @@ strokes each followed by a glide. Darting swims two fast laps of four bursts,
 with the side fins tucked through each burst and spread through the glide. Laps
 are as wide as the frame allows and tighter for longer koi, so every size fits.
 Resting hovers in place for six seconds, a little deeper, swinging and drifting
-slowly through a slow beat and glide with gently sculling fins. Deep rest hovers
-lower still for eight seconds, barely moving, with one fin flick per loop. A
-hovering loop is framed once, centered on the koi's sweep, and its drift shrinks
-only as far as the largest koi need to stay inside. Under water the koi turns
-toward water blue and a dithered share of it drops out, more with depth.
+slowly through a slow beat and glide with gently sculling fins. Surface feeding
+moves the same way at the surface, with ripple rings spreading from the mouth
+and food pellets drifting in; near the frame edge they shrink toward the mouth
+instead of running off it. Deep rest hovers lower still for eight seconds,
+barely moving, with one fin flick per loop. A hovering loop is framed once,
+centered on the koi's sweep, and its drift shrinks only as far as the largest
+koi need to stay inside. Under water the koi turns toward water blue and a
+dithered share of it drops out, more with depth.
 
 A wave travels from head to tail, growing toward the tail. The tail lobes bend
 behind it, slightly out of step, and the tail fan opens on each stroke. The side
@@ -248,9 +251,8 @@ A finished week is busy when at most one in ten of the latest 52 complete weeks
 before it match or beat its total; with fewer than 10 complete weeks, no week is
 busy. So a steady account cruises, feeding shows once in every week with a
 contribution, and the koi darts at most one day a week beyond milestones.
-Behavior changes only movement; growth, colors, and marks stay as they are.
-Surface feeding swims the cruise until its own movement is drawn. The rules and
-thresholds live in `src/behavior.rs`. Exercise the rules with
+Behavior changes only movement; growth, colors, and marks stay as they are. The
+rules and thresholds live in `src/behavior.rs`. Exercise the rules with
 `cargo test --offline --locked --test behavior`.
 
 ### Koi Library

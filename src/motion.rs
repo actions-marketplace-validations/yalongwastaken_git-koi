@@ -16,8 +16,11 @@ const PELVIC_SHARE_OF_SIDE_FIN_OPENING: f64 = 0.5;
 const WHISKER_SWAY_RADIANS: f64 = 0.15;
 const WHISKER_SWAY_LAG_RADIANS: f64 = 0.6;
 
+/// Rest and surface feeding share this loop.
 const REST_FRAME_COUNT: u32 = 90;
 const REST_DEPTH: f64 = 0.22;
+/// Feeding ripples and pellets repeat this many times per loop.
+const FEEDING_CYCLES_PER_LOOP: f64 = 3.0;
 const DEEP_REST_FRAME_COUNT: u32 = 120;
 const DEEP_REST_DEPTH: f64 = 0.5;
 
@@ -146,6 +149,9 @@ pub struct SwimPose {
     pub pelvic_fin_opening_radians: f64,
     /// The whiskers swing together, trailing the head.
     pub whisker_sway_radians: f64,
+    /// Where surface feeding's ripples and pellets are in their cycle, from zero up
+    /// to one; none in every other behavior.
+    pub feeding_phase: Option<f64>,
 }
 
 /// The still image: hovering at the surface without turning or drifting, with the
@@ -164,15 +170,15 @@ pub(crate) const STILL_POSE: SwimPose = SwimPose {
     side_fin_bends_radians: [0.0; 2],
     pelvic_fin_opening_radians: 0.0,
     whisker_sway_radians: 0.0,
+    feeding_phase: None,
 };
 
 /// Frames in a behavior's loop at FRAMES_PER_SECOND.
 pub fn frame_count(behavior: Behavior) -> u32 {
     match behavior {
-        // Surface feeding swims the cruise until its own movement lands.
-        Behavior::Cruise | Behavior::SurfaceFeeding => CRUISE_STYLE.loop_frame_count,
+        Behavior::Cruise => CRUISE_STYLE.loop_frame_count,
         Behavior::Dart => DART_STYLE.loop_frame_count,
-        Behavior::Rest => REST_FRAME_COUNT,
+        Behavior::Rest | Behavior::SurfaceFeeding => REST_FRAME_COUNT,
         Behavior::DeepRest => DEEP_REST_FRAME_COUNT,
     }
 }
@@ -185,7 +191,8 @@ pub fn frame_count(behavior: Behavior) -> u32 {
 /// lap speeds are rescaled so the loop covers exactly its laps. Cruising side fins
 /// brake open on the glide; darting side fins tuck through each burst and spread
 /// through the glide. Resting hovers a little deeper with a slow beat and glide and
-/// sculling fins; deep rest hovers lower still, barely moving, with one fin flick per
+/// sculling fins; surface feeding moves the same way at the surface, with ripples
+/// and pellets; deep rest hovers lower still, barely moving, with one fin flick per
 /// loop. In every behavior the tail lobes bend behind the wave, the side fins' tips
 /// trail their roots, the pelvic fins follow at half the opening, and the whiskers
 /// sway.
@@ -218,6 +225,7 @@ pub fn calculate_swim_pose(behavior: Behavior, frame_index: u32) -> SwimPose {
         pelvic_fin_opening_radians: PELVIC_SHARE_OF_SIDE_FIN_OPENING * drive.stroke_opening_radians,
         whisker_sway_radians: WHISKER_SWAY_RADIANS
             * (drive.wave_phase_radians - WHISKER_SWAY_LAG_RADIANS).sin(),
+        feeding_phase: drive.feeding_phase,
     }
 }
 
@@ -234,6 +242,7 @@ struct Drive {
     /// Opens the right fin and tucks the left by the same amount: a flare on the
     /// inside of the turn, a scull, or a flick.
     right_fin_offset_radians: f64,
+    feeding_phase: Option<f64>,
 }
 
 impl Drive {
@@ -247,16 +256,23 @@ impl Drive {
 
 fn calculate_drive(behavior: Behavior, loop_frame: u32) -> Drive {
     match behavior {
-        Behavior::Cruise | Behavior::SurfaceFeeding => CRUISE_STYLE.calculate_drive(loop_frame),
+        Behavior::Cruise => CRUISE_STYLE.calculate_drive(loop_frame),
         Behavior::Dart => DART_STYLE.calculate_drive(loop_frame),
-        Behavior::Rest => calculate_rest_drive(loop_frame),
+        Behavior::Rest => calculate_rest_drive(loop_frame, REST_DEPTH),
+        Behavior::SurfaceFeeding => Drive {
+            feeding_phase: Some(
+                (FEEDING_CYCLES_PER_LOOP * f64::from(loop_frame) / f64::from(REST_FRAME_COUNT))
+                    .fract(),
+            ),
+            ..calculate_rest_drive(loop_frame, 0.0)
+        },
         Behavior::DeepRest => calculate_deep_rest_drive(loop_frame),
     }
 }
 
-/// Hovers in place a little deeper, swinging and drifting slowly, with two slow beats
-/// and glides and gently sculling side fins.
-fn calculate_rest_drive(loop_frame: u32) -> Drive {
+/// Hovers in place at the given depth, swinging and drifting slowly, with two slow
+/// beats and glides and gently sculling side fins.
+fn calculate_rest_drive(loop_frame: u32, depth: f64) -> Drive {
     const STROKE_FRAME_COUNT: f64 = 45.0;
     const STROKE_SHARE: f64 = 0.4;
     const SWING_RADIANS: f64 = 0.1;
@@ -280,13 +296,14 @@ fn calculate_rest_drive(loop_frame: u32) -> Drive {
                 -DRIFT_PIXELS[1] * (2.0 * loop_turn + 1.0).sin(),
             ],
         },
-        depth: REST_DEPTH,
+        depth,
         wave_phase_radians: STILL_POSE.wave_phase_radians + frame * TAU / WAVE_FRAME_COUNT,
         wave_strength: GLIDE_WAVE_STRENGTH + STROKE_WAVE_GAIN * stroke,
         tail_spread_radians: TAIL_SPREAD_RADIANS,
         stroke_opening_radians: SIDE_FIN_OPENING_RADIANS
             + SIDE_FIN_BREATH_RADIANS * (3.0 * loop_turn).sin(),
         right_fin_offset_radians: SCULL_SWING_RADIANS * (TAU * frame / SCULL_FRAME_COUNT).sin(),
+        feeding_phase: None,
     }
 }
 
@@ -326,6 +343,7 @@ fn calculate_deep_rest_drive(loop_frame: u32) -> Drive {
         tail_spread_radians: TAIL_SPREAD_RADIANS,
         stroke_opening_radians: SIDE_FIN_OPENING_RADIANS,
         right_fin_offset_radians: FLICK_RADIANS * flick,
+        feeding_phase: None,
     }
 }
 
@@ -377,6 +395,7 @@ impl LapStyle {
                 + self.stroke_tail_spread_radians * stroke * wave_phase_radians.sin().abs(),
             stroke_opening_radians: self.calculate_stroke_opening(frame),
             right_fin_offset_radians: self.inside_flare_radians + scull,
+            feeding_phase: None,
         }
     }
 

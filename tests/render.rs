@@ -360,6 +360,7 @@ fn swimming_keeps_the_whole_fish_inside_the_frame() {
         Behavior::Cruise,
         Behavior::Dart,
         Behavior::Rest,
+        Behavior::SurfaceFeeding,
         Behavior::DeepRest,
     ] {
         for contribution_total in [0, 1_500, ADULT_CONTRIBUTIONS, MAX_GROWTH_CONTRIBUTIONS] {
@@ -382,6 +383,27 @@ fn swimming_keeps_the_whole_fish_inside_the_frame() {
             }
         }
     }
+}
+
+#[test]
+fn surface_feeding_draws_pellets_that_rest_does_not() {
+    const PELLET_COLOR: [u8; 4] = [228, 166, 114, 255];
+    let koi_development = develop_with_languages(1_500, FOUR_LANGUAGE_MIX);
+    let colors_of = |behavior| {
+        (0..frame_count(behavior))
+            .step_by(5)
+            .flat_map(|frame_index| {
+                collect_opaque_colors(&render_swim_frame(
+                    &koi_development,
+                    KoiBody::default(),
+                    behavior,
+                    frame_index,
+                ))
+            })
+            .collect::<BTreeSet<_>>()
+    };
+    assert!(colors_of(Behavior::SurfaceFeeding).contains(&PELLET_COLOR));
+    assert!(!colors_of(Behavior::Rest).contains(&PELLET_COLOR));
 }
 
 #[test]
