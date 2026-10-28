@@ -66,6 +66,56 @@ pub fn encode_svg(koi_frame: &KoiFrame) -> String {
     svg_document
 }
 
+/// The preview page up to its caption; GitHub's light and dark page colors follow.
+const PREVIEW_HEAD: &str = r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>git-koi preview</title>
+<style>
+  body { margin: 0; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  h1, h2 { margin: 0; font-size: 14px; font-weight: 600; }
+  header, section { display: grid; gap: 12px; padding: 16px; }
+  .light { background: #ffffff; color: #1f2328; }
+  .dark { background: #0d1117; color: #f0f6fc; }
+  .images { display: flex; flex-wrap: wrap; gap: 16px; }
+  figure { margin: 0; }
+  img { display: block; max-width: 100%; height: auto; image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<header class="light"><h1>"#;
+const PREVIEW_PANELS: &str = r#"</h1></header>
+<section class="light">
+<h2>GitHub light</h2>
+<div class="images">
+<figure><img src="koi.gif" width="512" height="512" alt="The koi swimming"><figcaption>koi.gif</figcaption></figure>
+<figure><img src="koi.png" width="512" height="512" alt="The koi, still"><figcaption>koi.png</figcaption></figure>
+</div>
+</section>
+<section class="dark">
+<h2>GitHub dark</h2>
+<div class="images">
+<figure><img src="koi.gif" width="512" height="512" alt="The koi swimming"><figcaption>koi.gif</figcaption></figure>
+<figure><img src="koi.png" width="512" height="512" alt="The koi, still"><figcaption>koi.png</figcaption></figure>
+</div>
+</section>
+</body>
+</html>
+"#;
+
+/// Build a page that previews `koi.gif` and `koi.png`, read from beside it, on GitHub's
+/// light and dark page colors under the given caption. It draws nothing itself and loads
+/// no scripts or outside files, so it shows exactly what was generated.
+pub fn encode_preview_html(caption: &str) -> String {
+    let escaped_caption = caption
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    format!("{PREVIEW_HEAD}{escaped_caption}{PREVIEW_PANELS}")
+}
+
 /// One GIF palette holds 256 entries, and one of them marks transparent pixels.
 const GIF_COLOR_LIMIT: usize = 255;
 const GIF_TRANSPARENT_INDEX: u8 = 0;
